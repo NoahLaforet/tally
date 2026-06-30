@@ -1,0 +1,17 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.138.2",
+    "httpx>=0.28.1",
+    "itsdangerous>=2.2.0",
+    "plaid-python>=40.1.0",
+    "pydantic-settings>=2.14.2",
+    "python-multipart>=0.0.32",
+    "sqlmodel>=0.0.39",
+    "sse-starlette>=3.4.5",
+    "uvicorn[standard]>=0.49.0",
+    "webauthn>=2.8.0",
+]

@@ -1,0 +1,422 @@
+"""Tally API.
+
+Serves the dashboard and computes its data live from the SQLite database that
+the ingestion pipeline fills. The frontend (frontend/index.html) loads
+/budget-data.js and /budget-subs.js, which this module generates on the fly from
+real transactions, so the UI always reflects the current database. Uploading a
+statement runs the same penny-reconciled pipeline and pushes an SSE event so the
+open dashboard refreshes itself.
+
+Money is integer cents in the DB; this layer converts to dollar numbers on the
+way out. No floats are stored, only presented.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from collections import defaultdict
+from datetime import date
+from pathlib import Path
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
+from sqlmodel import Session, select
+
+from .canonical import make_txn_uid
+from .config import settings
+from .db import engine, init_db
+from .models import (Account, Budget, Card, IncomeSource, Subscription,
+                     Transaction)
+from .ingest.pipeline import (ingest_file, ReconcileError, _assign_seq,
+                              _ensure_account, _match_transfers)
+from .ocr_apple import OCRUnavailable, ocr_image, parse_apple_card
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".heic")
+
+ROOT = Path(__file__).resolve().parents[2]
+FRONTEND = ROOT / "frontend"
+
+MONTHS = [1, 2, 3, 4, 5, 6]
+MNAME = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun"}
+
+CAT_LABEL = {
+    "dining": "Dining & Delivery", "grocery": "Groceries", "gas": "Gas & EV Charging",
+    "apple_hardware": "Apple Hardware (one-time)", "apple_services": "Apple Services",
+    "shopping": "Shopping", "entertainment": "Entertainment", "subscriptions": "Subscriptions",
+    "fitness": "Fitness", "transit": "Transit & Parking", "drugstore": "Drugstore",
+    "streaming": "Streaming", "other": "Other / Misc",
+}
+# moderate-light monthly targets (dollars); used unless a Budget row overrides
+TARGET = {
+    "dining": 600, "grocery": 325, "gas": 216, "shopping": 150, "entertainment": 150,
+    "subscriptions": 230, "transit": 63, "drugstore": 20, "apple_services": 50,
+    "fitness": 0, "streaming": 0, "other": 120, "apple_hardware": 0,
+}
+GAMBLING = ("kalshi", "prizepicks", "draftkings", "fanduel", "robinhood", "kraken", "coinbase")
+DELIVERY = ("doordash", "uber eats", "ubereats")
+# Checking-account outflows that are NOT consumption: card payoffs, savings moves,
+# tuition, P2P, and internal transfers. These have no matching transfer leg so the
+# transfer-matcher misses them; exclude them from the spend/rewards math by description.
+NONCONSUMPTION = (
+    "credit card auto pay", "credit card retry", "applecard gsbank payment",
+    "to wells fargo autograph", "autograph visa", "apple gs savings", "way2save",
+    "savings transfer", "tuition", "edu pay", "money transfer authorized", "online transfer",
+    "transfer to", "zelle to", "venmo payment", "bill pay",
+)
+SAVINGS_OPTIONS = [
+    {"name": "Apple Savings (Goldman)", "apy": 3.40, "note": "Your current account. Keep it here."},
+    {"name": "Wells Fargo savings", "apy": 0.01, "note": "Not worth it."},
+    {"name": "Chase savings", "apy": 0.01, "note": "Not worth it."},
+    {"name": "CIT Platinum ($5k+)", "apy": 3.75, "note": "Optional upgrade for a long-term bucket."},
+    {"name": "Forbright", "apy": 4.15, "note": "Highest mainstream, optional."},
+]
+
+app = FastAPI(title="Tally")
+
+from starlette.middleware.sessions import SessionMiddleware  # noqa: E402
+from .plaid_link import router as plaid_router  # noqa: E402
+from .auth import router as auth_router, require_user  # noqa: E402
+
+# Signed session cookie (holds the WebAuthn challenge and the logged-in user).
+app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET,
+                   same_site="lax", https_only=False)
+app.include_router(plaid_router)
+app.include_router(auth_router)
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    init_db()
+
+
+# ───────────────────────────── live SSE hub ─────────────────────────────
+class Hub:
+    def __init__(self) -> None:
+        self._subs: set[asyncio.Queue] = set()
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        self._subs.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self._subs.discard(q)
+
+    def publish(self, event: str) -> None:
+        for q in list(self._subs):
+            q.put_nowait(event)
+
+
+hub = Hub()
+
+
+# ───────────────────────────── helpers ─────────────────────────────
+def _card_key(account: Account) -> str:
+    n = (account.name or "").lower()
+    if "apple" in n:
+        return "apple"
+    if "autograph" in n or "bilt" in n or "wells fargo autograph" in n:
+        return "wf_autograph"
+    if account.kind in ("checking", "debit"):
+        return "debit"
+    return "debit"
+
+
+def _card_rules(session: Session) -> dict[str, dict]:
+    rules = {}
+    for c in session.exec(select(Card)).all():
+        try:
+            rules[c.key] = json.loads(c.rules_json or "{}")
+        except json.JSONDecodeError:
+            rules[c.key] = {}
+    return rules
+
+
+def _best_rate(rules: dict, category: str) -> tuple[str, int]:
+    best_key, best = "chase", -1
+    for key in ("apple", "wf_autograph", "chase"):
+        r = rules.get(key, {}).get(category, 0)
+        if r > best:
+            best, best_key = r, key
+    return best_key, best
+
+
+def compute_dashboard(session: Session) -> dict:
+    txns = session.exec(select(Transaction)).all()
+    accounts = {a.id: a for a in session.exec(select(Account)).all()}
+    rules = _card_rules(session)
+    budget_rows = {b.category: b.target_cents for b in session.exec(select(Budget)).all()}
+
+    cat_total = defaultdict(int)            # category -> spend cents (positive)
+    cat_card = defaultdict(lambda: defaultdict(int))
+    trend = defaultdict(int)
+    trend_deliv = defaultdict(int)
+    card_total = defaultdict(int)
+    deliv_total, deliv_n = 0, 0
+    gamb_total = 0
+    gamb_merchants: dict[str, int] = {}
+    gap_by_cat: dict[str, float] = defaultdict(float)
+    gap_card_for: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    rewards_now = 0.0
+    rewards_opt = 0.0
+
+    for t in txns:
+        if t.is_transfer:
+            continue
+        desc = (t.norm_merchant + " " + t.raw_description).lower()
+        if any(g in desc for g in GAMBLING):
+            if t.amount_cents < 0:
+                gamb_total += -t.amount_cents
+                gamb_merchants[t.norm_merchant] = gamb_merchants.get(t.norm_merchant, 0) + 1
+            continue
+        if t.amount_cents >= 0:
+            continue  # inflow, not consumption
+        if any(k in desc for k in NONCONSUMPTION):
+            continue  # card payoff / savings / tuition / P2P / transfer, not spend
+        spend = -t.amount_cents
+        cat = t.category or "other"
+        acc = accounts.get(t.account_id)
+        ck = _card_key(acc) if acc else "debit"
+        cat_total[cat] += spend
+        cat_card[cat][ck] += spend
+        card_total[ck] += spend
+        m = t.posted_date.month
+        if t.posted_date.year == 2026 and m in MONTHS:
+            trend[m] += spend
+            if any(d in desc for d in DELIVERY):
+                trend_deliv[m] += spend
+        if any(d in desc for d in DELIVERY):
+            deliv_total += spend
+            deliv_n += 1
+        # rewards: current vs best card rate (bps)
+        now_rate = rules.get(ck, {}).get(cat, 0)
+        _, best = _best_rate(rules, cat)
+        rewards_now += spend * now_rate / 10000.0
+        rewards_opt += spend * best * 1.0 / 10000.0
+        if best > now_rate:
+            gap_by_cat[cat] += spend * (best - now_rate) / 10000.0
+            gap_card_for[cat][ck] += spend
+
+    n = 6.0
+    total = sum(cat_total.values())
+    categories = []
+    for cid, cents in sorted(cat_total.items(), key=lambda x: -x[1]):
+        bk, _ = _best_rate(rules, cid)
+        tgt = budget_rows.get(cid)
+        target = round(tgt / 100, 2) if tgt is not None else TARGET.get(cid, round(cents / n / 100))
+        categories.append({
+            "id": cid, "label": CAT_LABEL.get(cid, cid.replace("_", " ").title()),
+            "total6": round(cents / 100, 2), "monthly": round(cents / n / 100, 2),
+            "best_card": bk, "target": target,
+        })
+
+    _top = max(gap_by_cat, key=gap_by_cat.get) if gap_by_cat else None
+    _topcard = (max(gap_card_for[_top], key=gap_card_for[_top].get)
+                if _top and gap_card_for[_top] else None)
+    _cardname = {"apple": "the Apple Card", "wf_autograph": "WF Autograph", "chase": "Chase", "debit": "debit"}
+    return {
+        "meta": {"period": "Jan-Jun 2026", "months": [MNAME[m] for m in MONTHS],
+                 "generated": date.today().isoformat()},
+        "spend": {
+            "monthly_avg": round(total / n / 100, 2), "total6": round(total / 100, 2),
+            "trend": [round(trend[m] / 100, 2) for m in MONTHS],
+            "trend_delivery": [round(trend_deliv[m] / 100, 2) for m in MONTHS],
+            "apple_hardware_onetime": round(cat_total.get("apple_hardware", 0) / 100, 2),
+        },
+        "categories": categories,
+        "delivery": {"monthly": round(deliv_total / n / 100, 2), "total6": round(deliv_total / 100, 2),
+                     "orders": deliv_n, "avg_order": round(deliv_total / deliv_n / 100, 2) if deliv_n else 0},
+        "cards": {"apple": round(card_total.get("apple", 0) / n / 100, 2),
+                  "wf_autograph": round(card_total.get("wf_autograph", 0) / n / 100, 2),
+                  "debit": round(card_total.get("debit", 0) / n / 100, 2)},
+        "rewards": {"now_yr": round(rewards_now / n * 12 / 100, 2),
+                    "optimal_yr": round(rewards_opt / n * 12 / 100, 2),
+                    "gap_yr": round((rewards_opt - rewards_now) / n * 12 / 100, 2),
+                    "top_label": CAT_LABEL.get(_top, _top) if _top else None,
+                    "top_card": _cardname.get(_topcard, _topcard) if _topcard else None},
+        "gambling": {"monthly": round(gamb_total / n / 100, 2), "total6": round(gamb_total / 100, 2),
+                     "merchants": [m for m, _ in sorted(gamb_merchants.items(), key=lambda x: -x[1])[:4]]},
+        "savings_options": SAVINGS_OPTIONS,
+    }
+
+
+def compute_subs(session: Session) -> list[dict]:
+    out = []
+    for s in session.exec(select(Subscription)).all():
+        out.append({
+            "name": s.name, "monthly": round(s.monthly_cents / 100, 2), "category": s.category,
+            "current_card": s.current_card or "", "recommended_card": s.recommended_card or "",
+            "status": s.status, "manage_url": s.manage_url or "", "moved": s.moved, "id": s.id,
+        })
+    return out
+
+
+# ───────────────────────────── data endpoints ─────────────────────────────
+@app.get("/budget-data.js")
+def budget_data_js(_user=Depends(require_user)) -> Response:
+    with Session(engine) as session:
+        data = compute_dashboard(session)
+    body = "window.BUDGET_DATA = " + json.dumps(data) + ";\n"
+    return Response(content=body, media_type="application/javascript",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/budget-subs.js")
+def budget_subs_js(_user=Depends(require_user)) -> Response:
+    with Session(engine) as session:
+        subs = compute_subs(session)
+    body = "window.BUDGET_SUBS = " + json.dumps(subs) + ";\n"
+    return Response(content=body, media_type="application/javascript",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/overview")
+def api_overview() -> dict:
+    with Session(engine) as session:
+        return compute_dashboard(session)
+
+
+@app.get("/api/subscriptions")
+def api_subs() -> list[dict]:
+    with Session(engine) as session:
+        return compute_subs(session)
+
+
+@app.post("/api/subscriptions/{sub_id}/move")
+def api_move(sub_id: int, moved: bool = True) -> dict:
+    with Session(engine) as session:
+        s = session.get(Subscription, sub_id)
+        if not s:
+            raise HTTPException(404, "subscription not found")
+        s.moved = moved
+        session.add(s)
+        session.commit()
+        return {"id": sub_id, "moved": moved}
+
+
+@app.get("/api/accounts")
+def api_accounts() -> list[dict]:
+    with Session(engine) as session:
+        return [{"id": a.id, "name": a.name, "kind": a.kind,
+                 "balance": round(a.balance_cents / 100, 2), "apy": a.apy_bps / 100}
+                for a in session.exec(select(Account)).all()]
+
+
+def _is_image_upload(file: UploadFile) -> bool:
+    """An Apple Card screenshot, by content type or file extension."""
+    ctype = (file.content_type or "").lower()
+    if ctype.startswith("image/"):
+        return True
+    name = (file.filename or "").lower()
+    return name.endswith(IMAGE_EXTS)
+
+
+def _ingest_apple_screenshot(path: str) -> int:
+    """OCR an Apple Card screenshot and upsert its rows. Return the count added.
+
+    Mirrors the pipeline upsert: ensure the apple account exists, disambiguate
+    true duplicates, compute the deterministic txn_uid, skip rows that already
+    exist (on conflict do nothing), then re-run the transfer matcher.
+    """
+    text = ocr_image(path)
+    records = parse_apple_card(text)
+    if not records:
+        return 0
+    _assign_seq(records)
+    with Session(engine) as session:
+        account_id = _ensure_account(session, "apple")
+        added = 0
+        for r in records:
+            uid = make_txn_uid(
+                r.account_id,
+                r.posted_date,
+                r.amount_cents,
+                r.norm_merchant or r.raw_description,
+                r.intra_group_seq,
+            )
+            if session.get(Transaction, uid) is not None:
+                continue
+            session.add(
+                Transaction(
+                    txn_uid=uid,
+                    account_id=account_id,
+                    posted_date=r.posted_date,
+                    amount_cents=r.amount_cents,
+                    raw_description=r.raw_description,
+                    norm_merchant=r.norm_merchant,
+                    category=r.category,
+                    category_source=r.category_source,
+                    is_transfer=r.is_transfer,
+                    transfer_group_id=r.transfer_group_id,
+                    source_file_hash=None,
+                    source_statement_id=r.source_statement_id,
+                    source_line=r.source_line,
+                )
+            )
+            added += 1
+        session.commit()
+        _match_transfers(session)
+    return added
+
+
+@app.post("/api/ingest")
+async def api_ingest(file: UploadFile = File(...), _user=Depends(require_user)) -> JSONResponse:
+    dest_dir = Path(settings.DATA_DIR) / "statements"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / file.filename
+    dest.write_bytes(await file.read())
+
+    # Image upload: Apple Card has no aggregator, so users snap the Wallet app
+    # transaction list. OCR it on-device and upsert, leaving the statement path
+    # below untouched.
+    if _is_image_upload(file):
+        try:
+            added = _ingest_apple_screenshot(str(dest))
+        except OCRUnavailable as e:
+            return JSONResponse(status_code=422,
+                                content={"ok": False, "error": "ocr_unavailable", "detail": str(e)})
+        hub.publish("transactions:updated")
+        return JSONResponse(content={"ok": True, "source": "ocr", "added": added})
+
+    try:
+        with Session(engine) as session:
+            result = ingest_file(str(dest), session=session)
+            session.commit()
+    except ReconcileError as e:
+        return JSONResponse(status_code=422,
+                            content={"ok": False, "error": "reconcile_failed", "detail": str(e)})
+    hub.publish("transactions:updated")
+    return JSONResponse(content={"ok": True, "result": result})
+
+
+@app.get("/api/events")
+async def api_events():
+    q = hub.subscribe()
+
+    async def gen():
+        try:
+            while True:
+                event = await q.get()
+                yield {"event": "message", "data": event}
+        finally:
+            hub.unsubscribe(q)
+
+    return EventSourceResponse(gen())
+
+
+# ───────────────────────────── frontend ─────────────────────────────
+@app.get("/")
+def index() -> FileResponse:
+    idx = FRONTEND / "index.html"
+    if not idx.exists():
+        raise HTTPException(404, "frontend not built")
+    return FileResponse(idx, headers={"Cache-Control": "no-store"})
+
+
+# serve any other static frontend assets (css/js) if present
+if FRONTEND.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")

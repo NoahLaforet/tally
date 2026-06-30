@@ -1,0 +1,48 @@
+# ───────────────────────────────────────────────────────────────
+# PRIVACY FIRST. Never commit real financial data, statements, or secrets.
+# ───────────────────────────────────────────────────────────────
+# The entire data dir is real data: the database (+ WAL/SHM sidecars),
+# uploaded statements, and quarantined files. Never commit any of it.
+backend/data/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal
+**/*.sqlite
+**/*.sqlite*
+*.ofx
+*.qfx
+*.qbo
+statements/
+uploads/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+secrets.json
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.uv/
+*.egg-info/
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Compiled on-device OCR helper (built once from backend/ocr/vision_ocr.swift)
+backend/ocr/vision_ocr
+backend/ocr/*.o
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log
