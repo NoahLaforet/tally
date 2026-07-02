@@ -20,6 +20,8 @@ uploads/
 .env
 .env.*
 !.env.example
+# Local planning docs (may reference private hostnames/paths)
+*.local.md
 secrets.json
 *.pem
 *.key
