@@ -13,9 +13,8 @@ way out. No floats are stored, only presented.
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
+import re
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -78,40 +77,40 @@ SAVINGS_OPTIONS = [
 app = FastAPI(title="Tally")
 
 from starlette.middleware.sessions import SessionMiddleware  # noqa: E402
+from .events import hub  # noqa: E402
+from .security import AuthGateMiddleware, SecurityHeadersMiddleware  # noqa: E402
 from .plaid_link import router as plaid_router  # noqa: E402
-from .auth import router as auth_router, require_user  # noqa: E402
+from .auth import (router as auth_router, require_user,  # noqa: E402
+                   ensure_bootstrap_code)
 
-# Signed session cookie (holds the WebAuthn challenge and the logged-in user).
+# Middleware nesting (first added runs innermost): the session cookie must be
+# decoded before the auth gate reads it, so SessionMiddleware is added last.
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(AuthGateMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET,
-                   same_site="lax", https_only=False)
+                   same_site="lax", https_only=settings.COOKIE_SECURE,
+                   max_age=settings.SESSION_MAX_AGE_DAYS * 86400)
 app.include_router(plaid_router)
 app.include_router(auth_router)
+
+INSECURE_SECRETS = {"", "dev-insecure-change-me", "change-me-to-a-long-random-string"}
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    if settings.AUTH_ENABLED and settings.SESSION_SECRET in INSECURE_SECRETS:
+        raise RuntimeError(
+            "AUTH_ENABLED=true requires a real SESSION_SECRET in .env "
+            "(e.g. `openssl rand -hex 32`); refusing to start with the "
+            "default one because it would make sessions forgeable."
+        )
     init_db()
+    ensure_bootstrap_code()
 
 
-# ───────────────────────────── live SSE hub ─────────────────────────────
-class Hub:
-    def __init__(self) -> None:
-        self._subs: set[asyncio.Queue] = set()
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        self._subs.add(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        self._subs.discard(q)
-
-    def publish(self, event: str) -> None:
-        for q in list(self._subs):
-            q.put_nowait(event)
-
-
-hub = Hub()
+@app.get("/healthz")
+def healthz() -> dict:
+    return {"ok": True}
 
 
 # ───────────────────────────── helpers ─────────────────────────────
@@ -275,19 +274,19 @@ def budget_subs_js(_user=Depends(require_user)) -> Response:
 
 
 @app.get("/api/overview")
-def api_overview() -> dict:
+def api_overview(_user=Depends(require_user)) -> dict:
     with Session(engine) as session:
         return compute_dashboard(session)
 
 
 @app.get("/api/subscriptions")
-def api_subs() -> list[dict]:
+def api_subs(_user=Depends(require_user)) -> list[dict]:
     with Session(engine) as session:
         return compute_subs(session)
 
 
 @app.post("/api/subscriptions/{sub_id}/move")
-def api_move(sub_id: int, moved: bool = True) -> dict:
+def api_move(sub_id: int, moved: bool = True, _user=Depends(require_user)) -> dict:
     with Session(engine) as session:
         s = session.get(Subscription, sub_id)
         if not s:
@@ -299,7 +298,7 @@ def api_move(sub_id: int, moved: bool = True) -> dict:
 
 
 @app.get("/api/accounts")
-def api_accounts() -> list[dict]:
+def api_accounts(_user=Depends(require_user)) -> list[dict]:
     with Session(engine) as session:
         return [{"id": a.id, "name": a.name, "kind": a.kind,
                  "balance": round(a.balance_cents / 100, 2), "apy": a.apy_bps / 100}
@@ -363,12 +362,34 @@ def _ingest_apple_screenshot(path: str) -> int:
     return added
 
 
+def _safe_filename(raw: str | None) -> str:
+    """Client filenames are attacker-controlled; reduce to a boring basename."""
+    name = Path(raw or "upload").name  # strips any directory components
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", name).strip(". ")
+    return name[:128] or "upload"
+
+
+async def _save_upload(file: UploadFile, dest: Path) -> None:
+    """Stream to disk, enforcing the size cap without buffering in memory."""
+    limit = settings.MAX_UPLOAD_MB * 1024 * 1024
+    written = 0
+    with dest.open("wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > limit:
+                out.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(
+                    413, f"file exceeds the {settings.MAX_UPLOAD_MB} MB upload limit")
+            out.write(chunk)
+
+
 @app.post("/api/ingest")
 async def api_ingest(file: UploadFile = File(...), _user=Depends(require_user)) -> JSONResponse:
     dest_dir = Path(settings.DATA_DIR) / "statements"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / file.filename
-    dest.write_bytes(await file.read())
+    dest = dest_dir / _safe_filename(file.filename)
+    await _save_upload(file, dest)
 
     # Image upload: Apple Card has no aggregator, so users snap the Wallet app
     # transaction list. OCR it on-device and upsert, leaving the statement path
@@ -389,12 +410,22 @@ async def api_ingest(file: UploadFile = File(...), _user=Depends(require_user)) 
     except ReconcileError as e:
         return JSONResponse(status_code=422,
                             content={"ok": False, "error": "reconcile_failed", "detail": str(e)})
+    except ValueError as e:
+        return JSONResponse(status_code=415,
+                            content={"ok": False, "error": "unsupported_format", "detail": str(e)})
+    except FileNotFoundError as e:
+        # pdftotext (poppler) missing on this host
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "error": "missing_dependency",
+                     "detail": "PDF parsing needs pdftotext: brew install poppler "
+                               f"(macOS) or apt install poppler-utils (Linux). [{e}]"})
     hub.publish("transactions:updated")
     return JSONResponse(content={"ok": True, "result": result})
 
 
 @app.get("/api/events")
-async def api_events():
+async def api_events(_user=Depends(require_user)):
     q = hub.subscribe()
 
     async def gen():

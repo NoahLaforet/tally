@@ -38,16 +38,51 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
     cursor.close()
 
 
-def init_db() -> None:
-    """Create all tables. Safe to call repeatedly; it is a no-op if they exist.
+# Schema migrations, applied in order to databases created before the change.
+# Fresh databases get the full current schema from create_all and are stamped
+# with the latest version directly, so these never run on them. Append-only:
+# never edit or reorder an entry that has shipped.
+MIGRATIONS: list[tuple[int, str]] = [
+    (1, "ALTER TABLE credential ADD COLUMN rp_id VARCHAR NOT NULL DEFAULT 'localhost'"),
+    (2, "ALTER TABLE credential ADD COLUMN label VARCHAR NOT NULL DEFAULT ''"),
+    (3, "ALTER TABLE credential ADD COLUMN created_at TIMESTAMP"),
+]
 
-    Importing models here guarantees every table is registered on SQLModel's
-    metadata before create_all runs.
+SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0
+
+
+def _run_migrations(fresh: bool) -> None:
+    with engine.connect() as conn:
+        raw = conn.connection.driver_connection
+        cur = raw.cursor()
+        current = cur.execute("PRAGMA user_version").fetchone()[0]
+        if fresh:
+            cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            raw.commit()
+            return
+        for version, sql in MIGRATIONS:
+            if version > current:
+                cur.execute(sql)
+                cur.execute(f"PRAGMA user_version = {version}")
+                raw.commit()
+        cur.close()
+
+
+def init_db() -> None:
+    """Create all tables and bring existing databases up to schema.
+
+    Safe to call repeatedly. Importing models here guarantees every table is
+    registered on SQLModel's metadata before create_all runs.
     """
     from . import models  # noqa: F401  (registers tables on metadata)
 
     settings.ensure_dirs()
+    with engine.connect() as conn:
+        existing = conn.exec_driver_sql(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='transaction'"
+        ).scalar()
     SQLModel.metadata.create_all(engine)
+    _run_migrations(fresh=not existing)
 
 
 def get_session() -> Iterator[Session]:

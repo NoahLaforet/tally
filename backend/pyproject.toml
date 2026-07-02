@@ -1,9 +1,10 @@
 [project]
-name = "backend"
-version = "0.1.0"
-description = "Add your description here"
+name = "tally"
+version = "1.0.0"
+description = "Local-first personal finance: penny-reconciled statements, Plaid sync, rewards routing"
 requires-python = ">=3.13"
 dependencies = [
+    "cryptography>=44.0.0",
     "fastapi>=0.138.2",
     "httpx>=0.28.1",
     "itsdangerous>=2.2.0",
@@ -15,3 +16,20 @@ dependencies = [
     "uvicorn[standard]>=0.49.0",
     "webauthn>=2.8.0",
 ]
+
+[project.optional-dependencies]
+# OCR fallback for non-macOS hosts (macOS uses the bundled Vision helper).
+# Also needs the tesseract binary: apt install tesseract-ocr
+ocr = [
+    "pytesseract>=0.3.13",
+    "pillow>=11.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

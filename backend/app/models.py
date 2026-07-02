@@ -128,13 +128,37 @@ class User(SQLModel, table=True):
 
 
 class Credential(SQLModel, table=True):
-    """A WebAuthn passkey credential bound to a user."""
+    """A WebAuthn passkey credential bound to a user.
+
+    Passkeys are origin-bound, so rp_id records which host the credential was
+    created on (e.g. "localhost" vs a Tailscale hostname); logins on a host
+    only offer the credentials registered there.
+    """
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     credential_id: bytes
     public_key: bytes
     sign_count: int = 0
+    rp_id: str = "localhost"
+    label: str = ""  # user-facing name, e.g. "MacBook Touch ID"
+    created_at: datetime | None = Field(default_factory=_utcnow)
+
+
+class SetupCode(SQLModel, table=True):
+    """A one-time code that authorizes registering a passkey.
+
+    The first code is generated on startup (printed to the server console,
+    never stored in plaintext); later ones come from `python -m app.newcode`.
+    This is what keeps a fresh instance from being claimed by a stranger who
+    can reach the port.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    code_hash: str = Field(index=True, unique=True)  # sha256 hex of the code
+    created_at: datetime = Field(default_factory=_utcnow)
+    expires_at: datetime
+    used_at: datetime | None = None
 
 
 class PlaidItem(SQLModel, table=True):

@@ -16,14 +16,23 @@ When you are ready:
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from decimal import Decimal, ROUND_HALF_UP
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from .auth import require_user
 from .config import settings
 from .db import engine
+from .events import hub
 from .models import PlaidItem
+from .secretbox import decrypt_token, encrypt_token, is_encrypted
 
-router = APIRouter(prefix="/api/plaid", tags=["plaid"])
+# Router-level auth: every Plaid endpoint mints tokens for or reads from real
+# bank connections, so none of them may be reachable without a session.
+router = APIRouter(prefix="/api/plaid", tags=["plaid"],
+                   dependencies=[Depends(require_user)])
 
 
 def _configured() -> bool:
@@ -35,14 +44,20 @@ def _client():
     import plaid
     from plaid.api import plaid_api
 
-    host = {
-        "sandbox": plaid.Environment.Sandbox,
-        "development": getattr(plaid.Environment, "Development", plaid.Environment.Sandbox),
-        "production": plaid.Environment.Production,
-    }.get((settings.PLAID_ENV or "sandbox").lower(), plaid.Environment.Sandbox)
-    cfg = plaid.Configuration(host=host, api_key={
+    env = (settings.PLAID_ENV or "sandbox").lower()
+    hosts = {"sandbox": plaid.Environment.Sandbox,
+             "production": plaid.Environment.Production}
+    if env not in hosts:
+        # A typo here must not silently fall back to the wrong environment.
+        raise HTTPException(500, f"unknown PLAID_ENV '{env}'; use sandbox or production")
+    cfg = plaid.Configuration(host=hosts[env], api_key={
         "clientId": settings.PLAID_CLIENT_ID, "secret": settings.PLAID_SECRET})
     return plaid_api.PlaidApi(plaid.ApiClient(cfg))
+
+
+def _cents(amount) -> int:
+    """Plaid amounts arrive as JSON numbers; convert without float arithmetic."""
+    return int((Decimal(str(amount)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 @router.get("/status")
@@ -75,27 +90,32 @@ def link_token() -> dict:
     return {"configured": True, "link_token": resp["link_token"]}
 
 
+class ExchangeBody(BaseModel):
+    # POST body, never a query parameter: query strings land in access logs.
+    public_token: str
+
+
 @router.post("/exchange")
-def exchange(public_token: str) -> dict:
+def exchange(body: ExchangeBody) -> dict:
     """Exchange the Link public_token for a long-lived access_token.
 
-    In a full build this access_token would be stored (encrypted) and used by
-    /sync. For the scaffold it is returned so the flow can be exercised end to end.
+    The access_token is stored Fernet-encrypted and is never returned or
+    logged; /sync decrypts it on use.
     """
     if not _configured():
         return {"configured": False, "message": "Plaid not configured."}
     from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 
     resp = _client().item_public_token_exchange(
-        ItemPublicTokenExchangeRequest(public_token=public_token))
+        ItemPublicTokenExchangeRequest(public_token=body.public_token))
     item_id, access_token = resp["item_id"], resp["access_token"]
     with Session(engine) as s:
         existing = s.get(PlaidItem, item_id)
         if existing:
-            existing.access_token = access_token
+            existing.access_token = encrypt_token(access_token)
             s.add(existing)
         else:
-            s.add(PlaidItem(item_id=item_id, access_token=access_token))
+            s.add(PlaidItem(item_id=item_id, access_token=encrypt_token(access_token)))
         s.commit()
     return {"configured": True, "item_id": item_id, "linked": True}
 
@@ -125,10 +145,15 @@ def sync() -> dict:
         if not items:
             return {"configured": True, "synced": 0, "message": "No linked accounts yet. Connect a bank first."}
         for item in items:
+            token = decrypt_token(item.access_token)
+            if not is_encrypted(item.access_token):
+                # Legacy plaintext row: encrypt it now that we have the value.
+                item.access_token = encrypt_token(token)
+                s.add(item)
             cursor = item.cursor
             txns = []
             while True:
-                kw = {"access_token": item.access_token}
+                kw = {"access_token": token}
                 if cursor:
                     kw["cursor"] = cursor
                 resp = client.transactions_sync(TransactionsSyncRequest(**kw))
@@ -140,7 +165,7 @@ def sync() -> dict:
             for t in txns:
                 acct_key = "plaid:" + t.account_id
                 acct_id = _ensure_account(s, acct_key)
-                amount_cents = int(round(-float(t.amount) * 100))
+                amount_cents = -_cents(t.amount)
                 merch = (t.merchant_name or t.name or "").strip()
                 desc = (t.name or merch).strip()
                 uid = make_txn_uid(acct_key, t.date, amount_cents, merch or desc, 0)
@@ -156,4 +181,6 @@ def sync() -> dict:
             s.add(item)
         s.commit()
         _match_transfers(s)
+    if total:
+        hub.publish("transactions:updated")
     return {"configured": True, "synced": total}
