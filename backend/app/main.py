@@ -132,14 +132,8 @@ def healthz() -> dict:
 
 # ───────────────────────────── helpers ─────────────────────────────
 def _card_key(account: Account) -> str:
-    n = (account.name or "").lower()
-    if "apple" in n:
-        return "apple"
-    if "autograph" in n or "bilt" in n or "wells fargo autograph" in n:
-        return "wf_autograph"
-    if account.kind in ("checking", "debit"):
-        return "debit"
-    return "debit"
+    """Explicit account -> rewards card mapping; None means earns nothing."""
+    return account.card_key or "debit"
 
 
 def _card_rules(session: Session) -> dict[str, dict]:

@@ -39,6 +39,9 @@ class Account(SQLModel, table=True):
     apy_bps: int = 0  # annual percentage yield in basis points
     plaid_account_id: str | None = Field(default=None, index=True)
     is_manual: bool = True
+    # Which rewards card (Card.key) spend on this account earns with. Explicit
+    # mapping, set at account creation; None = earns nothing (cash/debit).
+    card_key: str | None = None
 
 
 class Card(SQLModel, table=True):
@@ -68,6 +71,13 @@ class Transaction(SQLModel, table=True):
     source_line: int | None = None
     user_locked: bool = False  # if True, auto-categorizer must not overwrite
     first_seen_at: datetime = Field(default_factory=_utcnow)
+    # Where the row came from: statement | plaid | ocr. Statements are ground
+    # truth; a Plaid row that later appears on a statement is replaced by the
+    # statement row, which inherits the link below.
+    origin: str = Field(default="statement", index=True)
+    # The Plaid transaction this row corresponds to (either inserted from it,
+    # or matched to it). Guarantees live-sync and uploads never double count.
+    plaid_txn_id: str | None = Field(default=None, index=True)
 
 
 class IngestedFile(SQLModel, table=True):

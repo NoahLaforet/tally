@@ -42,10 +42,22 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
 # Fresh databases get the full current schema from create_all and are stamped
 # with the latest version directly, so these never run on them. Append-only:
 # never edit or reorder an entry that has shipped.
-MIGRATIONS: list[tuple[int, str]] = [
-    (1, "ALTER TABLE credential ADD COLUMN rp_id VARCHAR NOT NULL DEFAULT 'localhost'"),
-    (2, "ALTER TABLE credential ADD COLUMN label VARCHAR NOT NULL DEFAULT ''"),
-    (3, "ALTER TABLE credential ADD COLUMN created_at TIMESTAMP"),
+MIGRATIONS: list[tuple[int, list[str]]] = [
+    (1, ["ALTER TABLE credential ADD COLUMN rp_id VARCHAR NOT NULL DEFAULT 'localhost'"]),
+    (2, ["ALTER TABLE credential ADD COLUMN label VARCHAR NOT NULL DEFAULT ''"]),
+    (3, ["ALTER TABLE credential ADD COLUMN created_at TIMESTAMP"]),
+    # Explicit account -> rewards-card mapping replaces name-substring guessing.
+    (4, ["ALTER TABLE account ADD COLUMN card_key VARCHAR",
+         "UPDATE account SET card_key='apple' WHERE name='Apple Card'",
+         "UPDATE account SET card_key='wf_autograph' WHERE name='Wells Fargo Autograph'",
+         "UPDATE account SET card_key='debit' WHERE name='Wells Fargo Everyday Checking'"]),
+    # Statement/Plaid convergence: record where a row came from and which
+    # Plaid transaction it corresponds to (linked, not double-counted).
+    (5, ["ALTER TABLE \"transaction\" ADD COLUMN origin VARCHAR NOT NULL DEFAULT 'statement'",
+         "ALTER TABLE \"transaction\" ADD COLUMN plaid_txn_id VARCHAR",
+         "CREATE INDEX IF NOT EXISTS ix_transaction_plaid_txn_id ON \"transaction\" (plaid_txn_id)",
+         "UPDATE \"transaction\" SET origin='plaid' WHERE category_source='plaid'",
+         "UPDATE \"transaction\" SET origin='ocr' WHERE category_source='ocr'"]),
 ]
 
 SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0
@@ -60,9 +72,10 @@ def _run_migrations(fresh: bool) -> None:
             cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             raw.commit()
             return
-        for version, sql in MIGRATIONS:
+        for version, statements in MIGRATIONS:
             if version > current:
-                cur.execute(sql)
+                for sql in statements:
+                    cur.execute(sql)
                 cur.execute(f"PRAGMA user_version = {version}")
                 raw.commit()
         cur.close()

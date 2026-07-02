@@ -53,6 +53,15 @@ def make_txn_uid(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def make_plaid_uid(transaction_id: str) -> str:
+    """Deterministic row id for a Plaid-sourced transaction.
+
+    Keyed on Plaid's own transaction_id, which is unique per transaction, so
+    two identical same-day charges stay two rows (no intra_group_seq needed).
+    """
+    return hashlib.sha256(f"plaid|{transaction_id}".encode("utf-8")).hexdigest()
+
+
 class CanonicalRecord(BaseModel):
     """A parser's normalized output for one transaction.
 
