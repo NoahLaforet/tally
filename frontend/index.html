@@ -264,8 +264,14 @@
 <script>try{var t=localStorage.getItem("tally-theme")||(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark");}</script>
 <div class="auth-overlay" id="authOverlay"><div class="auth-card">
   <h2>Tally</h2><p>Sign in with a passkey. Face ID, Touch ID, or your device PIN. No password.</p>
-  <input id="authHandle" placeholder="your handle (e.g. alex)" autocomplete="username webauthn">
-  <div class="btnrow"><button id="authLogin" class="primary">Sign in</button><button id="authRegister">Create passkey</button></div>
+  <div class="btnrow"><button id="authLogin" class="primary">Sign in</button></div>
+  <div id="authRegSection" style="display:none;margin-top:16px">
+    <h3 class="mini">Register a passkey</h3>
+    <input id="authSetupCode" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="one-time-code">
+    <input id="authLabel" placeholder="passkey label (e.g. MacBook Touch ID)">
+    <div class="btnrow"><button id="authRegister">Register a passkey</button></div>
+  </div>
+  <div style="margin-top:12px"><a href="#" id="authRegToggle" style="font-size:12px">Have a setup code?</a></div>
   <div class="auth-err" id="authErr"></div>
 </div></div>
 <div class="liquid-bg"><b></b><b></b><b></b><b></b><b></b></div>
@@ -275,7 +281,7 @@
       <h1>Tally<span class="acc">.</span></h1>
       <div class="sub" id="periodSub">loading…</div>
     </div>
-    <div class="actions"><button class="reset" id="uploadBtn" title="PDF/CSV statements, or a screenshot of your Apple Card transactions from the Wallet app">Upload statement</button><button class="reset" id="connectBtn">Connect bank</button><input type="file" id="uploadInput" accept=".pdf,.csv,.ofx,.qfx,.png,.jpg,.jpeg,.heic,image/*" style="display:none"><button class="theme-toggle" id="privacyBtn" title="Hide amounts" aria-label="Toggle amount visibility"></button><button class="theme-toggle" id="themeBtn" title="Toggle theme" aria-label="Toggle light or dark theme"></button><button class="reset" id="resetBtn">Reset my edits</button></div>
+    <div class="actions"><button class="reset" id="uploadBtn" title="PDF/CSV statements, or a screenshot of your Apple Card transactions from the Wallet app">Upload statement</button><button class="reset" id="connectBtn">Connect bank</button><input type="file" id="uploadInput" accept=".pdf,.csv,.ofx,.qfx,.png,.jpg,.jpeg,.heic,image/*" style="display:none"><button class="theme-toggle" id="privacyBtn" title="Hide amounts" aria-label="Toggle amount visibility"></button><button class="theme-toggle" id="themeBtn" title="Toggle theme" aria-label="Toggle light or dark theme"></button><button class="reset" id="resetBtn">Reset my edits</button><button class="reset" id="logoutBtn" style="display:none">Log out</button></div>
     <div class="sub" id="uploadHint">No Apple Card export? Upload a screenshot of your Wallet transactions and Tally reads it on-device.</div>
   </div>
 
@@ -300,11 +306,9 @@
   <div class="note">Spending data is real, parsed from your Jan–Jun 2026 statements. Income, balances, targets, and savings are yours to edit and save automatically on this device. Drop new statements in <b>statements/</b> and I'll refresh the spending numbers.</div>
 </div>
 
-<script src="budget-data.js"></script>
-<script src="budget-subs.js"></script>
 <script>
-const D = window.BUDGET_DATA;
-const SUBS = window.BUDGET_SUBS || [];
+let D = null;      // /api/overview payload, set by loadData()
+let SUBS = [];     // /api/subscriptions payload, set by loadData()
 const KEY='tally:v2';
 
 // ---------- editable config (localStorage) ----------
@@ -321,10 +325,10 @@ const DEFAULTS = {
   ],
   savings:{ monthly:0, goal:10000, autoInto:"High-yield savings" },
   moves:{},   // checkbox state: which card-moves I've completed (keyed by sub name)
-  targets:{}  // filled from D.categories below
+  targets:{}  // filled from D.categories once data loads
 };
-D.categories.forEach(c=>{ DEFAULTS.targets[c.id]=c.target; });
-function escAttr(s){ return String(s).replace(/"/g,'&quot;'); }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function safeUrl(u){ try{ const p=new URL(String(u)); if(p.protocol==='http:'||p.protocol==='https:') return p.href; }catch(e){} return ''; }
 
 let CFG = load();
 function load(){ try{ const s=JSON.parse(localStorage.getItem(KEY)); return deepMerge(structuredClone(DEFAULTS), s||{}); }catch(e){ return structuredClone(DEFAULTS); } }
@@ -342,8 +346,26 @@ const CARDCOLOR={apple:'#b9bcc2',wf:'#d4a017',wf_autograph:'#d4a017',chase:'#3b8
 const CATCOLOR={dining:'#fb7185',grocery:'#34d399',gas:'#fbbf24',apple_hardware:'#a78bfa',apple_services:'#a78bfa',shopping:'#818cf8',entertainment:'#22d3ee',subscriptions:'#c084fc',fitness:'#f472b6',transit:'#60a5fa',drugstore:'#94a3b8',streaming:'#c084fc',other:'#71717a'};
 
 // recurring (monthly) categories only, exclude one-time apple hardware from budget math
-const RECUR = D.categories.filter(c=>c.id!=='apple_hardware');
-const monthlyTotal = RECUR.reduce((s,c)=>s+c.monthly,0);
+let RECUR = [];
+let monthlyTotal = 0;
+
+// ---------- data loading (JSON only, no script eval) ----------
+async function fetchJSON(u){
+  const r = await fetch(u);
+  if(r.status===401){ const e=new Error('login required'); e.auth=true; throw e; }
+  if(!r.ok) throw new Error('HTTP '+r.status+' for '+u);
+  return r.json();
+}
+async function loadData(){
+  const [data, subs] = await Promise.all([fetchJSON('/api/overview'), fetchJSON('/api/subscriptions')]);
+  D = data;
+  SUBS = Array.isArray(subs) ? subs : [];
+  RECUR = D.categories.filter(c=>c.id!=='apple_hardware');
+  monthlyTotal = RECUR.reduce((s,c)=>s+c.monthly,0);
+  DEFAULTS.targets = {};
+  D.categories.forEach(c=>{ DEFAULTS.targets[c.id]=c.target; });
+  CFG = load(); // re-merge saved edits over the freshly filled defaults
+}
 
 // ---------- SVG charts ----------
 function svgTrend(values, labels, opts={}){
@@ -354,7 +376,7 @@ function svgTrend(values, labels, opts={}){
     const bh=(v/max)*(h-pad*2), x=pad+i*bw+bw*0.18, y=h-pad-bh, bwi=bw*0.64;
     bars+=`<rect x="${x}" y="${y}" width="${bwi}" height="${bh}" rx="2.5" fill="var(--accent)" opacity="0.85"/>`;
     pts.push([pad+i*bw+bw/2, y]);
-    bars+=`<text x="${pad+i*bw+bw/2}" y="${h-7}" font-family="var(--mono)" font-size="9" fill="var(--text-faint)" text-anchor="middle">${labels[i]}</text>`;
+    bars+=`<text x="${pad+i*bw+bw/2}" y="${h-7}" font-family="var(--mono)" font-size="9" fill="var(--text-faint)" text-anchor="middle">${esc(labels[i])}</text>`;
     bars+=`<text x="${pad+i*bw+bw/2}" y="${y-5}" font-family="var(--mono)" font-size="8.5" fill="var(--text-dim)" text-anchor="middle">${PRIVACY?'···':(Math.round(v/100)/10+'k')}</text>`;
   });
   const line='M'+pts.map(p=>p.join(',')).join(' L');
@@ -376,7 +398,7 @@ function svgDonut(segs, opts={}){
 function barRows(items, max){
   return `<div class="bars">`+items.map(it=>{
     const pct=Math.max(2,(it.v/max)*100);
-    return `<div class="bar-row"><div class="nm">${it.nm}</div>
+    return `<div class="bar-row"><div class="nm">${esc(it.nm)}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${it.c}"></div></div>
       <div class="amt">${fmt(it.v)}<span class="per">/mo</span></div></div>`;
   }).join('')+`</div>`;
@@ -384,6 +406,7 @@ function barRows(items, max){
 
 // ---------- HERO ----------
 function renderHero(){
+  if(!D) return;
   const incTot=CFG.income.reduce((s,i)=>s+(+i.amount||0),0);
   const onHand=CFG.accounts.reduce((s,a)=>s+(+a.balance||0),0);
   const rw=D.rewards;
@@ -402,7 +425,7 @@ function renderOverview(){
   const maxC=Math.max(...top.map(t=>t.v));
   const dv=D.delivery;
   document.getElementById('v-overview').innerHTML=`
-    <div class="callout good"><div class="big">${fmt(D.rewards.gap_yr)}/yr</div><div class="txt"><b>Quick win:</b> you're leaving ~${fmt(D.rewards.gap_yr)}/yr in rewards on the table, mostly ${D.rewards.top_label||'dining'} sitting on ${D.rewards.top_card||'the wrong card'} at a low rate. Plus Chase gives you <b>6 months of free DashPass</b> right now. See the <a href="#" data-go="subs">Subscriptions</a> and <a href="#" data-go="budget">Budget</a> tabs.</div></div>
+    <div class="callout good"><div class="big">${fmt(D.rewards.gap_yr)}/yr</div><div class="txt"><b>Quick win:</b> you're leaving ~${fmt(D.rewards.gap_yr)}/yr in rewards on the table, mostly ${esc(D.rewards.top_label||'dining')} sitting on ${esc(D.rewards.top_card||'the wrong card')} at a low rate. Plus Chase gives you <b>6 months of free DashPass</b> right now. See the <a href="#" data-go="subs">Subscriptions</a> and <a href="#" data-go="budget">Budget</a> tabs.</div></div>
     <div class="grid2">
       <div class="panel"><h2>Monthly spending trend</h2><p class="desc">Total consumption per month (the spike is a one-time ~${fmt(D.spend.apple_hardware_onetime)} Apple purchase in March).</p>${svgTrend(D.spend.trend, D.meta.months)}</div>
       <div class="panel"><h2>Where it goes</h2><p class="desc">Top categories, monthly average.</p>${barRows(top,maxC)}</div>
@@ -410,7 +433,7 @@ function renderOverview(){
     <div class="grid3">
       <div class="callout bad"><div class="big">${fmt(dv.monthly)}</div><div class="txt"><b>Food delivery / mo.</b> ${dv.orders} orders over 6 mo, ${fmt2(dv.avg_order)} avg. Your single biggest cuttable line.</div></div>
       <div class="callout info"><div class="big">${fmt(monthlyTotal)}</div><div class="txt"><b>Controllable spend / mo</b> (excludes the one-time Apple hardware). This is what the budget targets.</div></div>
-      <div class="callout"><div class="big">${fmt(D.gambling.monthly)}</div><div class="txt"><b>Prediction markets / mo</b> (${(D.gambling.merchants||[]).slice(0,3).join(', ')||'flagged accounts'}). Not spending, just flagged so it stays on your radar.</div></div>
+      <div class="callout"><div class="big">${fmt(D.gambling.monthly)}</div><div class="txt"><b>Prediction markets / mo</b> (${esc((D.gambling.merchants||[]).slice(0,3).join(', ')||'flagged accounts')}). Not spending, just flagged so it stays on your radar.</div></div>
     </div>`;
 }
 
@@ -426,7 +449,7 @@ function renderSpending(){
       <div class="panel"><h2>Category breakdown</h2><p class="desc">Monthly average, Jan–Jun. One-time Apple hardware (${fmt(D.categories.find(c=>c.id==='apple_hardware')?.monthly||0)}/mo avg) shown separately at bottom.</p>${barRows(items.map(c=>({nm:c.label,v:c.monthly,c:CATCOLOR[c.id]||'#3b82f6'})),max)}</div>
       <div>
         <div class="panel" style="text-align:center"><h2 style="text-align:left">Spend mix</h2><p class="desc" style="text-align:left">Share of monthly controllable spend.</p>${svgDonut(donut)}
-          <div class="legend" style="justify-content:center">${items.filter(c=>c.monthly>30).map(c=>`<span><span class="swatch" style="background:${CATCOLOR[c.id]}"></span>${c.label}</span>`).join('')}</div>
+          <div class="legend" style="justify-content:center">${items.filter(c=>c.monthly>30).map(c=>`<span><span class="swatch" style="background:${CATCOLOR[c.id]||'#3b82f6'}"></span>${esc(c.label)}</span>`).join('')}</div>
         </div>
         <div class="panel"><h2>By card today</h2><p class="desc">Where spend currently lands.</p>${barRows(cardItems,Math.max(...cardItems.map(c=>c.v)))}
           <div class="note">Apple holds the most spend but earns only 1% on dining/gas. Shifting those to WF Autograph (3x) is the rewards fix.</div></div>
@@ -447,9 +470,9 @@ function renderBudget(){
     const col=over?'#f0506e':(under?'#3fb950':'#8b919e');
     const verdict=over?`<span class="over">▲ ${fmt(diff)} over</span>`:under?`<span class="under">▼ ${fmt(-diff)} under</span>`:`<span class="onpar">on target</span>`;
     return `<div class="brow">
-      <div class="nm">${c.label}<span class="sub">best card: ${CARDNAME[c.best_card]}</span></div>
+      <div class="nm">${esc(c.label)}<span class="sub">best card: ${esc(CARDNAME[c.best_card]||c.best_card||'·')}</span></div>
       <div class="tgt-track"><div class="tgt-fill" style="width:${pctAct}%;background:${col}33;border-right:2px solid ${col}"></div><div class="tgt-mark" style="left:${pctTgt}%"></div></div>
-      <div class="ctl"><span class="verdict">${verdict}</span><span class="inline-edit"><span class="pre">$</span><input type="number" data-tgt="${c.id}" value="${tgt}" min="0" step="5"></span></div>
+      <div class="ctl"><span class="verdict">${verdict}</span><span class="inline-edit"><span class="pre">$</span><input type="number" data-tgt="${esc(c.id)}" value="${tgt}" min="0" step="5"></span></div>
     </div>`;
   }).join('');
   const net=actualTot-targetTot;
@@ -480,11 +503,11 @@ function renderIncome(){
   const spend=monthlyTotal;                 // controllable monthly (excl one-time apple hardware)
   const net=incTot-spend;
   const rows=CFG.income.map((i,idx)=>`<tr>
-    <td><input data-incname="${idx}" value="${escAttr(i.name)}" style="min-width:160px"></td>
+    <td><input data-incname="${idx}" value="${esc(i.name)}" style="min-width:160px"></td>
     <td><span class="inline-edit"><span class="pre">$</span><input type="number" data-incamt="${idx}" value="${i.amount}" step="25"></span></td>
     <td><button class="iconbtn del" data-incdel="${idx}">−</button></td></tr>`).join('');
   document.getElementById('v-income').innerHTML=`
-    <div class="panel"><h2>Your income (editable)</h2><p class="desc">${CFG.incomeNote}</p>
+    <div class="panel"><h2>Your income (editable)</h2><p class="desc">${esc(CFG.incomeNote)}</p>
       <table><thead><tr><th>Source</th><th>$ / mo</th><th></th></tr></thead><tbody>${rows}
         <tr><td colspan="3"><button class="iconbtn" id="incAdd">+ add income source</button></td></tr>
         <tr><td><b>Total / mo</b></td><td class="mono" style="font-size:16px;color:var(--teal)"><b>${fmt(incTot)}</b></td><td></td></tr>
@@ -519,12 +542,12 @@ function renderSavings(){
   const yearEnd=bal, interestYr=yearEnd-(apple?(+apple.balance||0):0)-s.monthly*12;
   const SW={checking:'#f0506e',savings:'#3fb950',invest:'#a78bfa'};
   const acctRows=accts.map((a,idx)=>`<tr>
-    <td><span class="swatch" style="background:${SW[a.kind]||'#5d636f'}"></span><input data-acname="${idx}" value="${escAttr(a.name)}" style="min-width:150px;display:inline-block;width:auto"></td>
+    <td><span class="swatch" style="background:${SW[a.kind]||'#5d636f'}"></span><input data-acname="${idx}" value="${esc(a.name)}" style="min-width:150px;display:inline-block;width:auto"></td>
     <td><span class="inline-edit"><span class="pre">$</span><input type="number" data-acbal="${idx}" value="${a.balance}" step="100"></span></td>
     <td><span class="inline-edit"><input type="number" data-acapy="${idx}" value="${a.apy}" step="0.01" style="width:62px"><span class="pre">%</span></span></td>
     <td class="mono" style="color:var(--txt-faint)">${a.apy>0?fmt((+a.balance)*(+a.apy)/100)+'/yr':'·'}</td>
     <td><button class="iconbtn del" data-acdel="${idx}">−</button></td></tr>`).join('');
-  const optRows=D.savings_options.map(o=>`<tr><td>${o.name}</td><td class="mono" style="color:${o.apy>=3?'var(--good)':'var(--bad)'}">${o.apy.toFixed(2)}%</td><td style="color:var(--txt-dim)">${o.note}</td></tr>`).join('');
+  const optRows=D.savings_options.map(o=>`<tr><td>${esc(o.name)}</td><td class="mono" style="color:${o.apy>=3?'var(--good)':'var(--bad)'}">${o.apy.toFixed(2)}%</td><td style="color:var(--txt-dim)">${esc(o.note)}</td></tr>`).join('');
   document.getElementById('v-savings').innerHTML=`
     <div class="callout good"><div class="big">${apy.toFixed(2)}%</div><div class="txt"><b>Keep your savings in Apple.</b> Wells Fargo and Chase both pay ~0.01% (literally 340x worse), so your WF savings accounts earn almost nothing; use them as labeled buckets, keep the real balance in Apple. Only CIT (3.75%) or Forbright (4.15%) beat Apple, and only worth it for a big long-term chunk.</div></div>
     <div class="panel"><h2>Your accounts (editable)</h2><p class="desc">Add or remove any account. Total on hand: <b style="color:var(--teal)">${fmt(onHand)}</b> · in savings/investments: <b>${fmt(inSavings)}</b>.</p>
@@ -533,7 +556,7 @@ function renderSavings(){
       </tbody></table>
     </div>
     <div class="grid2">
-      <div class="panel"><h2>Savings plan</h2><p class="desc">Auto-save into <b>${apple?escAttr(apple.name):'Apple Savings'}</b> (${apy}% APY) and watch it compound.</p>
+      <div class="panel"><h2>Savings plan</h2><p class="desc">Auto-save into <b>${apple?esc(apple.name):'Apple Savings'}</b> (${apy}% APY) and watch it compound.</p>
         <table><tbody>
           <tr><td>Auto-save / month</td><td><span class="inline-edit"><span class="pre">$</span><input type="number" data-sav="monthly" value="${s.monthly}" step="25"></span></td></tr>
           <tr><td>Goal</td><td><span class="inline-edit"><span class="pre">$</span><input type="number" data-sav="goal" value="${s.goal}" step="500"></span></td></tr>
@@ -569,16 +592,17 @@ function renderSubs(){
     const move=needsMove(s);
     const done=!!CFG.moves[s.name];
     const chip=isDead?`<span class="chip dead">canceled</span>`
-      : move? (done?`<span class="chip ok">✓ moved</span>`:`<span class="chip move">→ ${CARDNAME[norm(s.recommended_card)]}</span>`)
+      : move? (done?`<span class="chip ok">✓ moved</span>`:`<span class="chip move">→ ${esc(CARDNAME[norm(s.recommended_card)]||s.recommended_card)}</span>`)
       : `<span class="chip keep">optimal</span>`;
     const pend = (move&&!done)?` <span class="mono" style="color:var(--txt-faint);font-size:10px">pending card</span>`:'';
-    const checkbox = move? `<input type="checkbox" data-move="${escAttr(s.name)}" ${done?'checked':''} style="width:auto;cursor:pointer;accent-color:var(--accent)">` : '';
+    const checkbox = move? `<input type="checkbox" data-move="${esc(s.name)}" ${done?'checked':''} style="width:auto;cursor:pointer;accent-color:var(--accent)">` : '';
+    const mUrl=safeUrl(s.manage_url);
     return `<tr class="${isDead||done?'strike':''}">
-      <td><b>${s.name}</b></td>
+      <td><b>${esc(s.name)}</b></td>
       <td class="mono">${fmt2(s.monthly)}</td>
-      <td><span class="swatch" style="background:${CARDCOLOR[norm(s.current_card)]||'#5d636f'}"></span>${CARDNAME[norm(s.current_card)]||s.current_card}</td>
+      <td><span class="swatch" style="background:${CARDCOLOR[norm(s.current_card)]||'#5d636f'}"></span>${esc(CARDNAME[norm(s.current_card)]||s.current_card)}</td>
       <td>${chip}${pend}</td>
-      <td>${s.manage_url?`<a href="${s.manage_url}" target="_blank">manage ↗</a>`:'·'}</td>
+      <td>${mUrl?`<a href="${esc(mUrl)}" target="_blank" rel="noopener noreferrer">manage ↗</a>`:(s.manage_url?esc(s.name):'·')}</td>
       <td style="text-align:center">${checkbox}</td>
     </tr>`;
   };
@@ -605,27 +629,49 @@ function norm(c){ if(!c)return''; c=c.toLowerCase().trim(); if(c.includes('wf')|
 function show(v){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.v===v));
   document.querySelectorAll('.view').forEach(el=>el.classList.toggle('active',el.id==='v-'+v));
-  ({overview:renderOverview,spending:renderSpending,budget:renderBudget,income:renderIncome,savings:renderSavings,subs:renderSubs}[v])();
+  if(!D) return; // no data yet: tab UI still responds, rendering waits for the loader
+  const fn={overview:renderOverview,spending:renderSpending,budget:renderBudget,income:renderIncome,savings:renderSavings,subs:renderSubs}[v];
+  if(fn) fn();
 }
+// listeners bind unconditionally so a failed data load never kills the UI
 document.getElementById('tabs').addEventListener('click',e=>{ const t=e.target.closest('.tab'); if(t) show(t.dataset.v); });
 document.addEventListener('click',e=>{ const g=e.target.closest('[data-go]'); if(g){e.preventDefault(); show(g.dataset.go);} });
 document.getElementById('resetBtn').addEventListener('click',()=>{ if(confirm('Reset your income, balances, targets and savings edits to defaults?')){ localStorage.removeItem(KEY); CFG=load(); renderHero(); show('overview'); }});
 
-renderHero();
-renderOverview();
+function showLoadError(){
+  const sub=document.getElementById('periodSub');
+  if(!sub) return;
+  sub.textContent='Could not load data. ';
+  const rb=document.createElement('button');
+  rb.className='reset'; rb.textContent='Retry';
+  rb.addEventListener('click',boot);
+  sub.appendChild(rb);
+}
+function boot(){
+  const sub=document.getElementById('periodSub');
+  if(sub) sub.textContent='loading…';
+  loadData().then(()=>{
+    renderHero();
+    const t=document.querySelector('.tab.active');
+    show(t?t.dataset.v:'overview');
+  }).catch(e=>{
+    if(e&&e.auth){
+      if(window.tallyShowAuth) window.tallyShowAuth();
+      else { const ov=document.getElementById('authOverlay'); if(ov) ov.classList.add('show'); }
+      if(sub) sub.textContent='sign in to load your data';
+    } else showLoadError();
+  });
+}
+boot();
 </script>
 <script>
 // Live refresh: backend pushes an SSE event after a statement is ingested.
 (function(){
   try{
     var es=new EventSource('/api/events');
-    es.onmessage=function(){
-      Promise.all([fetch('/budget-data.js').then(function(r){return r.text()}),
-                   fetch('/budget-subs.js').then(function(r){return r.text()})])
-        .then(function(a){ try{ (0,eval)(a[0]);(0,eval)(a[1]);
-          var t=document.querySelector('.tab.active'); if(t) show(t.dataset.v); }
-          catch(e){ location.reload(); } });
-    };
+    var refresh=function(){ if(typeof boot==='function') boot(); };
+    es.addEventListener('transactions:updated',refresh);
+    es.onmessage=refresh;
   }catch(e){}
 })();
 </script>
@@ -707,6 +753,7 @@ renderOverview();
   function toast(m){ var t=document.getElementById('toast'); if(!t){t=document.createElement('div');t.id='toast';document.body.appendChild(t);}
     t.textContent=m; t.classList.add('show'); clearTimeout(window.__tt); window.__tt=setTimeout(function(){t.classList.remove('show');},3400); }
   window.tallyToast=toast;
+  function fmtErr(j){ if(j&&typeof j.detail==='string') return j.detail; if(j&&j.error) return String(j.error); return 'Import failed'; }
   var ub=document.getElementById('uploadBtn'), ui=document.getElementById('uploadInput');
   if(ub&&ui){
     ub.addEventListener('click',function(){ui.click();});
@@ -715,7 +762,7 @@ renderOverview();
       var fd=new FormData(); fd.append('file',f);
       fetch('/api/ingest',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(j){
         if(j&&j.ok){ var ins=(j.source==='ocr')?(j.added||0):((j.result&&j.result.inserted)||0); toast(ins>0?('Added '+ins+' transactions, dashboard updating'):'Already imported, nothing new'); }
-        else { toast('Could not import: '+((j&&(j.detail||j.error))||'did not reconcile')); }
+        else { toast('Could not import: '+fmtErr(j)); }
         ui.value='';
       }).catch(function(){toast('Upload failed'); ui.value='';});
     });
@@ -726,7 +773,7 @@ renderOverview();
       onSuccess:function(public_token, meta){
         var inst=(meta&&meta.institution&&meta.institution.name)||'your bank';
         toast('Linked '+inst+', finishing...');
-        fetch('/api/plaid/exchange?public_token='+encodeURIComponent(public_token),{method:'POST'})
+        fetch('/api/plaid/exchange',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({public_token:public_token})})
           .then(function(r){return r.json();})
           .then(function(){ return fetch('/api/plaid/sync',{method:'POST'}).then(function(r){return r.json();}); })
           .then(function(s){ toast('Bank connected. '+((s&&s.synced)||0)+' new transactions.'); if(s&&s.synced>0){setTimeout(function(){location.reload();},1600);} })
@@ -763,33 +810,51 @@ renderOverview();
   function u2b(buf){var u=new Uint8Array(buf),s='';for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
   function J(u,b){return fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(function(r){return r.json();});}
   var ov=document.getElementById('authOverlay'), err=document.getElementById('authErr');
-  function show(m){if(err)err.textContent=m||'';}
-  async function register(handle){
-    var o=await J('/api/auth/register/begin',{handle:handle});
+  var regSec=document.getElementById('authRegSection'), regToggle=document.getElementById('authRegToggle');
+  function showErr(m){if(err)err.textContent=m||'';}
+  function revealReg(){ if(regSec)regSec.style.display=''; if(regToggle)regToggle.style.display='none'; }
+  function showOverlay(){ if(ov)ov.classList.add('show'); }
+  window.tallyShowAuth=showOverlay;
+  async function register(){
+    var code=(document.getElementById('authSetupCode').value||'').trim();
+    var label=(document.getElementById('authLabel').value||'').trim();
+    if(!code){ revealReg(); showErr('Enter your setup code.'); return; }
+    var r=await fetch('/api/auth/register/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({setup_code:code,handle:'owner',label:label})});
+    if(!r.ok){ var j=null; try{j=await r.json();}catch(e){} showErr((j&&typeof j.detail==='string')?j.detail:'Could not start registration.'); return; }
+    var o=await r.json();
     o.challenge=b2b(o.challenge); o.user.id=b2b(o.user.id);
     (o.excludeCredentials||[]).forEach(function(c){c.id=b2b(c.id);});
     var c=await navigator.credentials.create({publicKey:o});
-    var r=await J('/api/auth/register/finish',{id:c.id,rawId:u2b(c.rawId),type:c.type,
+    var cred={id:c.id,rawId:u2b(c.rawId),type:c.type,
       response:{attestationObject:u2b(c.response.attestationObject),clientDataJSON:u2b(c.response.clientDataJSON)},
-      clientExtensionResults:c.getClientExtensionResults?c.getClientExtensionResults():{}});
-    if(r.ok)location.reload();else show('Could not create passkey.');
+      clientExtensionResults:c.getClientExtensionResults?c.getClientExtensionResults():{}};
+    var fin=await J('/api/auth/register/finish',{credential:cred,label:label});
+    if(fin.ok)location.reload();else showErr('Could not create passkey.');
   }
-  async function login(handle){
-    var o=await J('/api/auth/login/begin',{handle:handle});
+  async function login(){
+    var r=await fetch('/api/auth/login/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    if(r.status===404){ showErr('No passkey is registered for this host yet.'); revealReg(); return; }
+    if(!r.ok){ showErr('Sign in failed.'); return; }
+    var o=await r.json();
     o.challenge=b2b(o.challenge); (o.allowCredentials||[]).forEach(function(c){c.id=b2b(c.id);});
     var c=await navigator.credentials.get({publicKey:o});
-    var r=await J('/api/auth/login/finish',{id:c.id,rawId:u2b(c.rawId),type:c.type,
+    var fin=await J('/api/auth/login/finish',{id:c.id,rawId:u2b(c.rawId),type:c.type,
       response:{authenticatorData:u2b(c.response.authenticatorData),clientDataJSON:u2b(c.response.clientDataJSON),signature:u2b(c.response.signature),userHandle:c.response.userHandle?u2b(c.response.userHandle):null},
       clientExtensionResults:c.getClientExtensionResults?c.getClientExtensionResults():{}});
-    if(r.ok)location.reload();else show('Sign in failed.');
+    if(fin.ok)location.reload();else showErr('Sign in failed.');
   }
+  // wire everything unconditionally so the overlay works no matter how it was opened
+  var lb=document.getElementById('authLogin');
+  if(lb)lb.addEventListener('click',function(){showErr('');login().catch(function(){showErr('Sign in failed.');});});
+  var rb=document.getElementById('authRegister');
+  if(rb)rb.addEventListener('click',function(){showErr('');register().catch(function(){showErr('Could not create passkey.');});});
+  if(regToggle)regToggle.addEventListener('click',function(e){e.preventDefault();revealReg();});
+  var lo=document.getElementById('logoutBtn');
+  if(lo)lo.addEventListener('click',function(){fetch('/api/auth/logout',{method:'POST'}).then(function(){location.reload();}).catch(function(){location.reload();});});
   fetch('/api/auth/me').then(function(r){return r.json();}).then(function(m){
-    if(m.authEnabled && !m.authenticated && ov){
-      ov.classList.add('show');
-      var hi=document.getElementById('authHandle');
-      document.getElementById('authLogin').onclick=function(){show('');login((hi.value||'').trim().toLowerCase()).catch(function(e){show('Sign in failed.');});};
-      document.getElementById('authRegister').onclick=function(){var h=(hi.value||'').trim().toLowerCase();if(!h){show('Pick a handle first.');return;}show('');register(h).catch(function(e){show('Could not create passkey.');});};
-    }
+    if(m.authEnabled && location.hostname==='127.0.0.1'){ location.hostname='localhost'; return; } // passkeys can't work on an IP origin
+    if(m.authEnabled && m.authenticated && lo) lo.style.display='';
+    if(m.authEnabled && !m.authenticated){ if(m.anyCredentials===false) revealReg(); showOverlay(); }
   }).catch(function(){});
 })();
 </script>
