@@ -23,11 +23,12 @@ from .models import Card, Subscription, Transaction
 # Configurable so no local username/path is baked into the repo. Defaults to the
 # app's own data/statements dir; point TALLY_SEED_STATEMENTS at a folder of
 # statements (and TALLY_SEED_SUBS at a budget-subs.js) for first-run seeding.
+# Read through Settings so values in .env work, not just exported variables.
 from .config import settings  # noqa: E402
 
-STATEMENTS_DIR = os.environ.get(
-    "TALLY_SEED_STATEMENTS", str(os.path.join(settings.DATA_DIR, "statements")))
-SUBS_JS = os.environ.get("TALLY_SEED_SUBS", "")
+STATEMENTS_DIR = settings.TALLY_SEED_STATEMENTS or str(
+    os.path.join(settings.DATA_DIR, "statements"))
+SUBS_JS = settings.TALLY_SEED_SUBS
 
 # Reward rate matrix in basis points, sourced from card-strategy.md. 3% == 300.
 _CANON_CATS = [
@@ -195,7 +196,15 @@ def main() -> None:
     with Session(engine) as session:
         before = session.exec(select(func.count()).select_from(Transaction)).one()
         n_cards = seed_cards(session)
-        n_subs = seed_subscriptions(session)
+        # Every step below is optional and idempotent, so a re-run after any
+        # failure simply completes whatever is missing; there is no
+        # unrecoverable half-seeded state.
+        if SUBS_JS and os.path.exists(SUBS_JS):
+            n_subs = seed_subscriptions(session)
+        else:
+            n_subs = 0
+            if SUBS_JS:
+                print(f"TALLY_SEED_SUBS not found, skipping: {SUBS_JS}")
         print(f"Seeded {n_cards} cards and {n_subs} subscriptions.")
 
         inserted, failures = ingest_all(session)

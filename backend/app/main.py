@@ -13,6 +13,7 @@ way out. No floats are stored, only presented.
 
 from __future__ import annotations
 
+import calendar
 import json
 import re
 from collections import defaultdict
@@ -39,8 +40,24 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".heic")
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "frontend"
 
-MONTHS = [1, 2, 3, 4, 5, 6]
-MNAME = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun"}
+def _month_window(months: int, today: date | None = None) -> list[tuple[int, int]]:
+    """The last `months` full calendar months plus the current (partial) month,
+    oldest first, as (year, month) pairs."""
+    today = today or date.today()
+    y, m = today.year, today.month
+    out: list[tuple[int, int]] = []
+    for _ in range(months + 1):
+        out.append((y, m))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return list(reversed(out))
+
+
+def _period_label(win: list[tuple[int, int]]) -> str:
+    (y0, m0), (y1, m1) = win[0], win[-1]
+    a, b = calendar.month_abbr[m0], calendar.month_abbr[m1]
+    return f"{a}-{b} {y1}" if y0 == y1 else f"{a} {y0} - {b} {y1}"
 
 CAT_LABEL = {
     "dining": "Dining & Delivery", "grocery": "Groceries", "gas": "Gas & EV Charging",
@@ -144,16 +161,26 @@ def _best_rate(rules: dict, category: str) -> tuple[str, int]:
     return best_key, best
 
 
-def compute_dashboard(session: Session) -> dict:
-    txns = session.exec(select(Transaction)).all()
+def compute_dashboard(session: Session, months: int = 6) -> dict:
+    """Aggregate the dashboard over a rolling window: the last `months` full
+    calendar months plus the current partial month. Monthly averages divide by
+    the number of full window months that actually have data, so a young
+    database is not diluted toward zero and the current month never skews the
+    average downward."""
+    win = _month_window(months)
+    window_start = date(win[0][0], win[0][1], 1)
+    win_index = {ym: i for i, ym in enumerate(win)}
+
+    txns = session.exec(select(Transaction)
+                        .where(Transaction.posted_date >= window_start)).all()
     accounts = {a.id: a for a in session.exec(select(Account)).all()}
     rules = _card_rules(session)
     budget_rows = {b.category: b.target_cents for b in session.exec(select(Budget)).all()}
 
     cat_total = defaultdict(int)            # category -> spend cents (positive)
     cat_card = defaultdict(lambda: defaultdict(int))
-    trend = defaultdict(int)
-    trend_deliv = defaultdict(int)
+    trend = [0] * len(win)
+    trend_deliv = [0] * len(win)
     card_total = defaultdict(int)
     deliv_total, deliv_n = 0, 0
     gamb_total = 0
@@ -162,10 +189,15 @@ def compute_dashboard(session: Session) -> dict:
     gap_card_for: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     rewards_now = 0.0
     rewards_opt = 0.0
+    months_with_data: set[tuple[int, int]] = set()
 
     for t in txns:
         if t.is_transfer:
             continue
+        ym = (t.posted_date.year, t.posted_date.month)
+        bucket = win_index.get(ym)
+        if bucket is None:
+            continue  # future-dated row; not in the window
         desc = (t.norm_merchant + " " + t.raw_description).lower()
         if any(g in desc for g in GAMBLING):
             if t.amount_cents < 0:
@@ -176,6 +208,7 @@ def compute_dashboard(session: Session) -> dict:
             continue  # inflow, not consumption
         if any(k in desc for k in NONCONSUMPTION):
             continue  # card payoff / savings / tuition / P2P / transfer, not spend
+        months_with_data.add(ym)
         spend = -t.amount_cents
         cat = t.category or "other"
         acc = accounts.get(t.account_id)
@@ -183,12 +216,9 @@ def compute_dashboard(session: Session) -> dict:
         cat_total[cat] += spend
         cat_card[cat][ck] += spend
         card_total[ck] += spend
-        m = t.posted_date.month
-        if t.posted_date.year == 2026 and m in MONTHS:
-            trend[m] += spend
-            if any(d in desc for d in DELIVERY):
-                trend_deliv[m] += spend
+        trend[bucket] += spend
         if any(d in desc for d in DELIVERY):
+            trend_deliv[bucket] += spend
             deliv_total += spend
             deliv_n += 1
         # rewards: current vs best card rate (bps)
@@ -200,7 +230,8 @@ def compute_dashboard(session: Session) -> dict:
             gap_by_cat[cat] += spend * (best - now_rate) / 10000.0
             gap_card_for[cat][ck] += spend
 
-    n = 6.0
+    # Full window months (everything but the trailing partial) that have data.
+    n = float(max(1, sum(1 for ym in win[:-1] if ym in months_with_data)))
     total = sum(cat_total.values())
     categories = []
     for cid, cents in sorted(cat_total.items(), key=lambda x: -x[1]):
@@ -218,12 +249,15 @@ def compute_dashboard(session: Session) -> dict:
                 if _top and gap_card_for[_top] else None)
     _cardname = {"apple": "the Apple Card", "wf_autograph": "WF Autograph", "chase": "Chase", "debit": "debit"}
     return {
-        "meta": {"period": "Jan-Jun 2026", "months": [MNAME[m] for m in MONTHS],
+        "meta": {"period": _period_label(win),
+                 "months": [calendar.month_abbr[m] for _, m in win],
+                 "window_months": months,
+                 "full_months_with_data": int(n),
                  "generated": date.today().isoformat()},
         "spend": {
             "monthly_avg": round(total / n / 100, 2), "total6": round(total / 100, 2),
-            "trend": [round(trend[m] / 100, 2) for m in MONTHS],
-            "trend_delivery": [round(trend_deliv[m] / 100, 2) for m in MONTHS],
+            "trend": [round(c / 100, 2) for c in trend],
+            "trend_delivery": [round(c / 100, 2) for c in trend_deliv],
             "apple_hardware_onetime": round(cat_total.get("apple_hardware", 0) / 100, 2),
         },
         "categories": categories,
@@ -231,6 +265,7 @@ def compute_dashboard(session: Session) -> dict:
                      "orders": deliv_n, "avg_order": round(deliv_total / deliv_n / 100, 2) if deliv_n else 0},
         "cards": {"apple": round(card_total.get("apple", 0) / n / 100, 2),
                   "wf_autograph": round(card_total.get("wf_autograph", 0) / n / 100, 2),
+                  "chase": round(card_total.get("chase", 0) / n / 100, 2),
                   "debit": round(card_total.get("debit", 0) / n / 100, 2)},
         "rewards": {"now_yr": round(rewards_now / n * 12 / 100, 2),
                     "optimal_yr": round(rewards_opt / n * 12 / 100, 2),
@@ -274,9 +309,10 @@ def budget_subs_js(_user=Depends(require_user)) -> Response:
 
 
 @app.get("/api/overview")
-def api_overview(_user=Depends(require_user)) -> dict:
+def api_overview(months: int = 6, _user=Depends(require_user)) -> dict:
+    months = max(3, min(24, months))
     with Session(engine) as session:
-        return compute_dashboard(session)
+        return compute_dashboard(session, months=months)
 
 
 @app.get("/api/subscriptions")

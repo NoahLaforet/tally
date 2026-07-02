@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # app runs with zero external calls and zero cost out of the box.
     USE_LLM_CATEGORIZER: bool = False
 
+    # First-run seeding. Optional: a folder of statements to bulk-import and a
+    # legacy budget-subs.js to pre-populate subscriptions. Blank = skip.
+    TALLY_SEED_STATEMENTS: str = ""
+    TALLY_SEED_SUBS: str = ""
+
     # Secrets. No defaults. Read from the environment when present.
     CLAUDE_API_KEY: str | None = None
     PLAID_CLIENT_ID: str | None = None
