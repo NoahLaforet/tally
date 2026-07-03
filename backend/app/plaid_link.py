@@ -369,6 +369,11 @@ def run_sync() -> dict:
         _match_transfers(s)
     if added or matched or removed_n:
         hub.publish("transactions:updated")
+        # New transactions can reveal or update recurring charges.
+        from .subscriptions_engine import detect_subscriptions
+
+        with Session(engine) as s:
+            detect_subscriptions(s)
     result = {"configured": True, "synced": added, "matched_statements": matched,
               "removed": removed_n}
     _record_sync_result(result)

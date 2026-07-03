@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template for the daily Plaid sync LaunchAgent. tools/install_launchd.sh fills in
+     __TALLY_DIR__ and __UV_PATH__ and installs it as com.tally.sync.plist.
+     Fires once a day at 08:00 local time. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.tally.sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__UV_PATH__</string>
+		<string>run</string>
+		<string>python</string>
+		<string>-m</string>
+		<string>app.sync_cli</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__TALLY_DIR__/backend</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>8</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>__TALLY_DIR__/backend/data/logs/sync.log</string>
+	<key>StandardErrorPath</key>
+	<string>__TALLY_DIR__/backend/data/logs/sync.log</string>
+</dict>
+</plist>

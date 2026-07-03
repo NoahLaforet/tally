@@ -1,0 +1,13 @@
+# Timer that fires tally-sync.service once a day at 08:00 local time.
+# Persistent=true runs a missed sync on the next boot.
+# Install: sudo cp tally-sync.* /etc/systemd/system/ && sudo systemctl enable --now tally-sync.timer
+
+[Unit]
+Description=Tally daily Plaid sync timer
+
+[Timer]
+OnCalendar=*-*-* 08:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

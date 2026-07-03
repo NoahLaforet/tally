@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template for the Tally server LaunchAgent. tools/install_launchd.sh fills in
+     __TALLY_DIR__ and __UV_PATH__ and installs it as com.tally.server.plist. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.tally.server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__UV_PATH__</string>
+		<string>run</string>
+		<string>uvicorn</string>
+		<string>app.main:app</string>
+		<string>--host</string>
+		<string>127.0.0.1</string>
+		<string>--port</string>
+		<string>8787</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__TALLY_DIR__/backend</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__TALLY_DIR__/backend/data/logs/server.log</string>
+	<key>StandardErrorPath</key>
+	<string>__TALLY_DIR__/backend/data/logs/server.log</string>
+</dict>
+</plist>

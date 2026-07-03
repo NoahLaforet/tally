@@ -1,0 +1,14 @@
+# Daily Plaid sync unit for Linux hosts. Triggered by tally-sync.timer.
+# The paths and user below are examples. Adjust /opt/tally, the uv path,
+# and the tally user to match your machine before installing.
+
+[Unit]
+Description=Tally daily Plaid sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tally
+WorkingDirectory=/opt/tally/backend
+ExecStart=/usr/local/bin/uv run python -m app.sync_cli

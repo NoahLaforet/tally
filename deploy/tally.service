@@ -1,0 +1,20 @@
+# Tally server unit for Linux hosts (Jetson or any systemd box).
+# The paths and user below are examples. Adjust /opt/tally, the uv path,
+# and the tally user to match your machine before installing.
+# Install: sudo cp tally.service /etc/systemd/system/ && sudo systemctl enable --now tally
+
+[Unit]
+Description=Tally server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tally
+WorkingDirectory=/opt/tally/backend
+ExecStart=/usr/local/bin/uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

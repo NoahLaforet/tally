@@ -30,7 +30,7 @@ from ..canonical import CanonicalRecord, make_txn_uid
 from ..config import settings
 from ..db import engine
 from ..models import Account, IngestedFile, Transaction
-from . import apple_csv, wf_pdf
+from . import apple_csv, ofx, wf_pdf
 from .common import ParseResult, looks_like_transfer, pdftext
 from .convergence import find_plaid_shadow, learned_category
 
@@ -63,6 +63,15 @@ def _detect_and_parse(path: str, file_hash: str) -> ParseResult:
     """Detect the file format by content and return its ParseResult."""
     if apple_csv.is_apple_csv(path):
         return apple_csv.parse(path, file_hash)
+    if ofx.is_ofx(path):
+        result = ofx.parse(path, file_hash)
+        # OFX account keys are dynamic (ofx_<last4>); register the display
+        # spec the parser derived so _ensure_account creates a proper row.
+        name = result.detail.get("account_name")
+        if name and result.account not in ACCOUNT_SPECS:
+            ACCOUNT_SPECS[result.account] = (
+                name, result.detail.get("account_kind", "other"), None, None)
+        return result
     if path.lower().endswith(".pdf"):
         txt = pdftext(path)
         result = wf_pdf.parse(txt, file_hash)
