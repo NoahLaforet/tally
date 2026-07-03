@@ -60,3 +60,16 @@ def find_statement_match(session: Session, account_id: int, posted: date,
         if t.plaid_txn_id is None:
             return t
     return None
+
+
+def learned_category(session: Session, norm_merchant: str) -> str | None:
+    """The user-confirmed category for a merchant, if one was ever set.
+
+    Every ingest path (statement, plaid, ocr) consults this at insert time so
+    a correction made once in the transactions view sticks for all future
+    imports of that merchant.
+    """
+    from ..models import LearnedCategory
+
+    row = session.get(LearnedCategory, norm_merchant)
+    return row.category if row else None

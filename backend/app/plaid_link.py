@@ -62,12 +62,28 @@ def _cents(amount) -> int:
 
 @router.get("/status")
 def status() -> dict:
+    import json as _json
+    from .models import Setting
+
+    with Session(engine) as s:
+        row = s.get(Setting, "plaid_last_sync")
+        last = _json.loads(row.value_json) if row else None
+        items = [{"item_id": i.item_id, "institution": i.institution,
+                  "has_cursor": bool(i.cursor)}
+                 for i in s.exec(select(PlaidItem)).all()]
     return {"configured": _configured(), "env": settings.PLAID_ENV or "sandbox",
+            "items": items, "last_sync": last,
             "note": "Apple Card is statement-upload only; Plaid covers Wells Fargo and Chase."}
 
 
+class LinkTokenBody(BaseModel):
+    # Set to relaunch Plaid Link in update mode for an existing Item (fix a
+    # broken connection, e.g. a Chase link that never delivered a cursor).
+    item_id: str | None = None
+
+
 @router.post("/link-token")
-def link_token() -> dict:
+def link_token(body: LinkTokenBody | None = None) -> dict:
     """Create a Plaid Link token for the browser to open Plaid Link."""
     if not _configured():
         return {"configured": False, "message": "Set PLAID_CLIENT_ID and PLAID_SECRET, then restart."}
@@ -79,10 +95,18 @@ def link_token() -> dict:
     kwargs = dict(
         user=LinkTokenCreateRequestUser(client_user_id="tally-local-user"),
         client_name="Tally",
-        products=[Products("transactions")],
         country_codes=[CountryCode("US")],
         language="en",
     )
+    if body and body.item_id:
+        with Session(engine) as s:
+            item = s.get(PlaidItem, body.item_id)
+        if item is None:
+            raise HTTPException(404, "no such linked item")
+        # Update mode: pass the existing access_token and omit products.
+        kwargs["access_token"] = decrypt_token(item.access_token)
+    else:
+        kwargs["products"] = [Products("transactions")]
     # OAuth banks (Chase, Wells Fargo) need a registered https redirect URI.
     if settings.PLAID_REDIRECT_URI:
         kwargs["redirect_uri"] = settings.PLAID_REDIRECT_URI
@@ -176,8 +200,25 @@ def _map_plaid_account(s: Session, pa, institution: str | None):
     return row
 
 
+def _snapshot_balance(s: Session, account_id: int, balance_cents: int) -> None:
+    """Record today's balance for the net worth series; one row per day."""
+    from datetime import date as _date
+    from .models import BalanceSnapshot
+
+    today = _date.today()
+    row = s.exec(select(BalanceSnapshot)
+                 .where(BalanceSnapshot.account_id == account_id)
+                 .where(BalanceSnapshot.taken_on == today)).first()
+    if row is None:
+        row = BalanceSnapshot(account_id=account_id, taken_on=today,
+                              balance_cents=balance_cents)
+    else:
+        row.balance_cents = balance_cents
+    s.add(row)
+
+
 def _refresh_item_accounts(s: Session, client, item: PlaidItem, token: str) -> dict[str, int]:
-    """Map every account on the Item and update balances. Returns
+    """Map every account on the Item, update balances, snapshot them. Returns
     plaid_account_id -> canonical Account.id."""
     from plaid.model.accounts_get_request import AccountsGetRequest
 
@@ -195,19 +236,35 @@ def _refresh_item_accounts(s: Session, client, item: PlaidItem, token: str) -> d
             # Credit balances arrive as positive "owed"; store as negative net.
             row.balance_cents = -cents if row.kind == "credit" else cents
             s.add(row)
+            _snapshot_balance(s, row.id, row.balance_cents)
         mapping[pa.account_id] = row.id
     return mapping
 
 
-@router.post("/sync")
-def sync() -> dict:
+def _record_sync_result(result: dict) -> None:
+    import json as _json
+    from datetime import datetime, timezone
+    from .models import Setting
+
+    with Session(engine) as s:
+        row = s.get(Setting, "plaid_last_sync") or Setting(key="plaid_last_sync")
+        row.value_json = _json.dumps(
+            {"at": datetime.now(timezone.utc).isoformat(), **result})
+        s.add(row)
+        s.commit()
+
+
+def run_sync() -> dict:
     """Pull new transactions from every linked Item and converge them with the
     statement-ingested ledger (see ingest/convergence.py): a Plaid transaction
     matching an unlinked statement row links to it instead of inserting, new
     ones insert as origin='plaid', bank-removed ones are cleaned up, and
     pending transactions are skipped until they post. Plaid amounts are
     positive for outflows, so they are negated into our signed-cents
-    convention (negative = money out)."""
+    convention (negative = money out).
+
+    Callable directly (the launchd/systemd timer runs it via app.sync_cli
+    without HTTP, so the passkey wall never needs a service account)."""
     if not _configured():
         return {"configured": False, "message": "Plaid not configured."}
     # Never import sandbox's fake transactions into the real database.
@@ -217,7 +274,7 @@ def sync() -> dict:
     from plaid.model.transactions_sync_request import TransactionsSyncRequest
     from .ingest.pipeline import _match_transfers
     from .ingest.common import categorize
-    from .ingest.convergence import find_statement_match
+    from .ingest.convergence import find_statement_match, learned_category
     from .canonical import make_plaid_uid, normalize_description
     from .models import Transaction
 
@@ -281,12 +338,15 @@ def sync() -> dict:
                 uid = make_plaid_uid(t.transaction_id)
                 if s.get(Transaction, uid) is not None:
                     continue
+                norm = normalize_description(merch or desc)
+                learned = learned_category(s, norm)
                 s.add(Transaction(
                     txn_uid=uid, account_id=acct_id, posted_date=t.date,
                     amount_cents=amount_cents, raw_description=desc,
-                    norm_merchant=normalize_description(merch or desc),
-                    category=categorize(desc, merch, ""),
-                    category_source="plaid", origin="plaid",
+                    norm_merchant=norm,
+                    category=learned or categorize(desc, merch, ""),
+                    category_source="learned" if learned else "plaid",
+                    origin="plaid",
                     plaid_txn_id=t.transaction_id))
                 added += 1
 
@@ -309,5 +369,12 @@ def sync() -> dict:
         _match_transfers(s)
     if added or matched or removed_n:
         hub.publish("transactions:updated")
-    return {"configured": True, "synced": added, "matched_statements": matched,
-            "removed": removed_n}
+    result = {"configured": True, "synced": added, "matched_statements": matched,
+              "removed": removed_n}
+    _record_sync_result(result)
+    return result
+
+
+@router.post("/sync")
+def sync() -> dict:
+    return run_sync()

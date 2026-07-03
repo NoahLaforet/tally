@@ -104,6 +104,31 @@ class Subscription(SQLModel, table=True):
     manage_url: str | None = None
     moved: bool = False  # user marked it as moved to the recommended card
     detected: bool = True  # True if auto detected from transactions
+    # Recurrence engine fields. cadence_days is the inferred period (30ish for
+    # monthly, 365ish for yearly); flag marks price_creep or forgotten.
+    cadence_days: int | None = None
+    last_amount_cents: int | None = None
+    last_seen_on: date | None = None
+    flag: str | None = None  # price_creep | forgotten | None
+    norm_merchant: str | None = Field(default=None, index=True)
+
+
+class BalanceSnapshot(SQLModel, table=True):
+    """An account balance observed on a date; the net worth series source.
+    One row per (account, day); later observations the same day overwrite."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    taken_on: date = Field(index=True)
+    balance_cents: int = 0
+
+
+class Setting(SQLModel, table=True):
+    """Instance-level key/value store (JSON values): savings plan, last sync
+    status, per-instance config. Keeps one-off state out of dedicated tables."""
+
+    key: str = Field(primary_key=True)
+    value_json: str = "{}"
 
 
 class Budget(SQLModel, table=True):

@@ -32,7 +32,7 @@ from ..db import engine
 from ..models import Account, IngestedFile, Transaction
 from . import apple_csv, wf_pdf
 from .common import ParseResult, looks_like_transfer, pdftext
-from .convergence import find_plaid_shadow
+from .convergence import find_plaid_shadow, learned_category
 
 # account key -> (display name, kind, institution, rewards card_key)
 ACCOUNT_SPECS = {
@@ -202,6 +202,10 @@ def ingest_file(path: str, session: Session | None = None) -> dict:
             if session.get(Transaction, uid) is not None:
                 continue  # on conflict do nothing; never overwrite a locked row
 
+            learned = learned_category(session, r.norm_merchant)
+            if learned is not None:
+                r.category = learned
+                r.category_source = "learned"
             # Statements are ground truth: a Plaid-inserted row covering the
             # same charge is replaced, and the statement row inherits the
             # Plaid link, transfer grouping, and any hand-set category.

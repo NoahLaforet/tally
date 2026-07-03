@@ -58,6 +58,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
          "CREATE INDEX IF NOT EXISTS ix_transaction_plaid_txn_id ON \"transaction\" (plaid_txn_id)",
          "UPDATE \"transaction\" SET origin='plaid' WHERE category_source='plaid'",
          "UPDATE \"transaction\" SET origin='ocr' WHERE category_source='ocr'"]),
+    # Subscription recurrence engine fields.
+    (6, ["ALTER TABLE subscription ADD COLUMN cadence_days INTEGER",
+         "ALTER TABLE subscription ADD COLUMN last_amount_cents INTEGER",
+         "ALTER TABLE subscription ADD COLUMN last_seen_on DATE",
+         "ALTER TABLE subscription ADD COLUMN flag VARCHAR",
+         "ALTER TABLE subscription ADD COLUMN norm_merchant VARCHAR",
+         "CREATE INDEX IF NOT EXISTS ix_subscription_norm_merchant ON subscription (norm_merchant)"]),
 ]
 
 SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0
