@@ -72,30 +72,54 @@ CAT_LABEL = {
     "fitness": "Fitness", "transit": "Transit & Parking", "drugstore": "Drugstore",
     "streaming": "Streaming", "other": "Other / Misc",
 }
-# moderate-light monthly targets (dollars); used unless a Budget row overrides
-TARGET = {
-    "dining": 600, "grocery": 325, "gas": 216, "shopping": 150, "entertainment": 150,
-    "subscriptions": 230, "transit": 63, "drugstore": 20, "apple_services": 50,
-    "fitness": 0, "streaming": 0, "other": 120, "apple_hardware": 0,
+# Merchant lexicons drive the gambling tracker, the delivery breakdown, and
+# the not-consumption exclusions (card payoffs, P2P, internal moves that the
+# transfer matcher cannot pair). These defaults are generic US services; each
+# instance layers its own additions on top via the 'lexicons' Setting so
+# nobody's personal banking phrasing lives in this public file.
+DEFAULT_LEXICONS = {
+    "gambling": ["draftkings", "fanduel", "betmgm", "caesars sportsbook",
+                 "prizepicks", "kalshi"],
+    "delivery": ["doordash", "uber eats", "ubereats", "grubhub", "postmates",
+                 "instacart"],
+    "nonconsumption": ["credit card auto pay", "credit card autopay",
+                       "credit card retry", "credit card payment",
+                       "savings transfer", "online transfer", "transfer to",
+                       "zelle to", "venmo payment", "bill pay", "tuition",
+                       "money transfer authorized"],
 }
-GAMBLING = ("kalshi", "prizepicks", "draftkings", "fanduel", "robinhood", "kraken", "coinbase")
-DELIVERY = ("doordash", "uber eats", "ubereats")
-# Checking-account outflows that are NOT consumption: card payoffs, savings moves,
-# tuition, P2P, and internal transfers. These have no matching transfer leg so the
-# transfer-matcher misses them; exclude them from the spend/rewards math by description.
-NONCONSUMPTION = (
-    "credit card auto pay", "credit card retry", "applecard gsbank payment",
-    "to wells fargo autograph", "autograph visa", "apple gs savings", "way2save",
-    "savings transfer", "tuition", "edu pay", "money transfer authorized", "online transfer",
-    "transfer to", "zelle to", "venmo payment", "bill pay",
-)
-SAVINGS_OPTIONS = [
-    {"name": "Apple Savings (Goldman)", "apy": 3.40, "note": "Your current account. Keep it here."},
-    {"name": "Wells Fargo savings", "apy": 0.01, "note": "Not worth it."},
-    {"name": "Chase savings", "apy": 0.01, "note": "Not worth it."},
-    {"name": "CIT Platinum ($5k+)", "apy": 3.75, "note": "Optional upgrade for a long-term bucket."},
-    {"name": "Forbright", "apy": 4.15, "note": "Highest mainstream, optional."},
-]
+
+
+def _instance_lexicons(session: Session) -> dict[str, tuple[str, ...]]:
+    """Defaults plus this instance's additions from the 'lexicons' Setting."""
+    from .models import Setting
+
+    row = session.get(Setting, "lexicons")
+    extra = {}
+    if row:
+        try:
+            extra = json.loads(row.value_json)
+        except json.JSONDecodeError:
+            extra = {}
+    out = {}
+    for key, base in DEFAULT_LEXICONS.items():
+        more = [str(x).lower() for x in extra.get(key, [])]
+        out[key] = tuple(dict.fromkeys([*base, *more]))
+    return out
+
+
+def _savings_options(session: Session) -> list[dict]:
+    """Per-instance savings comparison table ('savings_options' Setting)."""
+    from .models import Setting
+
+    row = session.get(Setting, "savings_options")
+    if not row:
+        return []
+    try:
+        opts = json.loads(row.value_json)
+        return opts if isinstance(opts, list) else []
+    except json.JSONDecodeError:
+        return []
 
 INSECURE_SECRETS = {"", "dev-insecure-change-me", "change-me-to-a-long-random-string"}
 
@@ -129,8 +153,11 @@ app.add_middleware(AuthGateMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET,
                    same_site="lax", https_only=settings.COOKIE_SECURE,
                    max_age=settings.SESSION_MAX_AGE_DAYS * 86400)
+from .api_cards import router as cards_router  # noqa: E402
+
 app.include_router(plaid_router)
 app.include_router(auth_router)
+app.include_router(cards_router)
 
 @app.get("/healthz")
 def healthz() -> dict:
@@ -177,6 +204,9 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
     accounts = {a.id: a for a in session.exec(select(Account)).all()}
     rules = _card_rules(session)
     budget_rows = {b.category: b.target_cents for b in session.exec(select(Budget)).all()}
+    lex = _instance_lexicons(session)
+    GAMBLING, DELIVERY = lex["gambling"], lex["delivery"]
+    NONCONSUMPTION = lex["nonconsumption"]
 
     cat_total = defaultdict(int)            # category -> spend cents (positive)
     cat_card = defaultdict(lambda: defaultdict(int))
@@ -238,7 +268,8 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
     for cid, cents in sorted(cat_total.items(), key=lambda x: -x[1]):
         bk, _ = _best_rate(rules, cid)
         tgt = budget_rows.get(cid)
-        target = round(tgt / 100, 2) if tgt is not None else TARGET.get(cid, round(cents / n / 100))
+        # No Budget row set: the observed monthly average is the target.
+        target = round(tgt / 100, 2) if tgt is not None else round(cents / n / 100)
         categories.append({
             "id": cid, "label": CAT_LABEL.get(cid, cid.replace("_", " ").title()),
             "total6": round(cents / 100, 2), "monthly": round(cents / n / 100, 2),
@@ -248,7 +279,7 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
     _top = max(gap_by_cat, key=gap_by_cat.get) if gap_by_cat else None
     _topcard = (max(gap_card_for[_top], key=gap_card_for[_top].get)
                 if _top and gap_card_for[_top] else None)
-    _cardname = {"apple": "the Apple Card", "wf_autograph": "WF Autograph", "chase": "Chase", "debit": "debit"}
+    _cardname = {c.key: c.name for c in session.exec(select(Card)).all()}
     return {
         "meta": {"period": _period_label(win),
                  "months": [calendar.month_abbr[m] for _, m in win],
@@ -267,10 +298,7 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
         "categories": categories,
         "delivery": {"monthly": round(deliv_total / n / 100, 2), "total6": round(deliv_total / 100, 2),
                      "orders": deliv_n, "avg_order": round(deliv_total / deliv_n / 100, 2) if deliv_n else 0},
-        "cards": {"apple": round(card_total.get("apple", 0) / n / 100, 2),
-                  "wf_autograph": round(card_total.get("wf_autograph", 0) / n / 100, 2),
-                  "chase": round(card_total.get("chase", 0) / n / 100, 2),
-                  "debit": round(card_total.get("debit", 0) / n / 100, 2)},
+        "cards": {k: round(v / n / 100, 2) for k, v in sorted(card_total.items())},
         "rewards": {"now_yr": round(rewards_now / n * 12 / 100, 2),
                     "optimal_yr": round(rewards_opt / n * 12 / 100, 2),
                     "gap_yr": round((rewards_opt - rewards_now) / n * 12 / 100, 2),
@@ -278,7 +306,7 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
                     "top_card": _cardname.get(_topcard, _topcard) if _topcard else None},
         "gambling": {"monthly": round(gamb_total / n / 100, 2), "total6": round(gamb_total / 100, 2),
                      "merchants": [m for m, _ in sorted(gamb_merchants.items(), key=lambda x: -x[1])[:4]]},
-        "savings_options": SAVINGS_OPTIONS,
+        "savings_options": _savings_options(session),
     }
 
 
