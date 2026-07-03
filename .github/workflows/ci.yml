@@ -1,0 +1,56 @@
+# CI for tally. Three jobs: unit tests, privacy scan, fresh-clone smoke boot.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Run tests
+        working-directory: backend
+        run: |
+          uv sync --group dev
+          uv run pytest -q
+
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Privacy scan
+        run: python3 tools/privacy_scan.py
+
+  fresh-clone-smoke:
+    # Prove a stranger's first run works. No .env, no secrets, just run.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Install poppler (PDF support, mirrors documented setup)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - name: Boot the app
+        run: |
+          nohup ./run.sh > server.log 2>&1 &
+          echo $! > server.pid
+      - name: Wait for healthz
+        run: |
+          curl --retry 30 --retry-delay 3 --retry-all-errors --fail \
+            http://127.0.0.1:8787/healthz
+      - name: Smoke the SPA and API
+        run: |
+          curl -f http://127.0.0.1:8787/
+          curl -f http://127.0.0.1:8787/api/overview
+      - name: Server log
+        if: always()
+        run: cat server.log || true
+      - name: Stop server
+        if: always()
+        run: kill "$(cat server.pid)" || true

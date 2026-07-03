@@ -1,0 +1,9 @@
+Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD)
+04/01/2026,04/02/2026,NETFLIX.COM,Netflix,Entertainment,Purchase,15.49
+04/02/2026,04/03/2026,TRADER JOE'S #123 SANTA CRUZ CA,Trader Joe's,Grocery,Purchase,42.17
+04/03/2026,04/03/2026,ACH DEPOSIT INTERNET TRANSFER,Apple Card,Payment,Payment,-250.00
+04/05/2026,04/06/2026,CHIPOTLE 0042 SANTA CRUZ CA,Chipotle Mexican Grill,Restaurants,Purchase,11.85
+04/07/2026,04/08/2026,BLUE BOTTLE COFFEE SANTA CRUZ CA,Blue Bottle Coffee,Restaurants,Purchase,6.75
+04/07/2026,04/08/2026,BLUE BOTTLE COFFEE SANTA CRUZ CA,Blue Bottle Coffee,Restaurants,Purchase,6.75
+04/10/2026,04/11/2026,STEAM PURCHASE 425-952-2985,Steam Games,Entertainment,Purchase,29.99
+04/12/2026,04/13/2026,CVS/PHARMACY #99 SANTA CRUZ CA,CVS Pharmacy,Drug Stores,Purchase,8.42

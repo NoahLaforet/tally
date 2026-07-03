@@ -1,0 +1,16 @@
+Wells Fargo Everyday Checking
+Statement period April 1, 2026 - April 30, 2026
+
+Activity summary
+     Beginning balance on 4/1                                  1,000.00
+     Deposits/Additions                                        500.00
+     Withdrawals/Subtractions                                  300.00
+     Ending balance on 4/30                                    1,200.00
+
+Transaction history
+
+     Date            Description                               Deposits/Additions    Withdrawals/Subtractions   Ending daily balance
+     4/10      DIRECT DEPOSIT EMPLOYER PAYROLL                 500.00
+     4/12      POS PURCHASE GROCERY MART SANTA CRUZ                                  200.00
+     4/15      ATM CASH WITHDRAWAL 123 MAIN ST                                       100.00
+     Totals                                                    $500.00               $300.00

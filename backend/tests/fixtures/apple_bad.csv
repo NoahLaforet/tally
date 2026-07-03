@@ -1,0 +1,5 @@
+Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD)
+04/01/2026,04/02/2026,NETFLIX.COM,Netflix,Entertainment,Purchase,15.49
+04/02/2026,04/03/2026,CHEVRON 0091 SANTA CRUZ CA,Chevron,Gas,Purchase,30.00
+04/04/2026,04/05/2026,MYSTERY VENDOR LLC,Mystery Vendor,Other,Purchase,12.3x
+04/06/2026,04/07/2026,CVS/PHARMACY #99 SANTA CRUZ CA,CVS Pharmacy,Drug Stores,Purchase,8.42

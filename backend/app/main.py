@@ -19,6 +19,7 @@ import re
 import secrets
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -96,7 +97,23 @@ SAVINGS_OPTIONS = [
     {"name": "Forbright", "apy": 4.15, "note": "Highest mainstream, optional."},
 ]
 
-app = FastAPI(title="Tally")
+INSECURE_SECRETS = {"", "dev-insecure-change-me", "change-me-to-a-long-random-string"}
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    if settings.AUTH_ENABLED and settings.SESSION_SECRET in INSECURE_SECRETS:
+        raise RuntimeError(
+            "AUTH_ENABLED=true requires a real SESSION_SECRET in .env "
+            "(e.g. `openssl rand -hex 32`); refusing to start with the "
+            "default one because it would make sessions forgeable."
+        )
+    init_db()
+    ensure_bootstrap_code()
+    yield
+
+
+app = FastAPI(title="Tally", lifespan=_lifespan)
 
 from starlette.middleware.sessions import SessionMiddleware  # noqa: E402
 from .events import hub  # noqa: E402
@@ -114,21 +131,6 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET,
                    max_age=settings.SESSION_MAX_AGE_DAYS * 86400)
 app.include_router(plaid_router)
 app.include_router(auth_router)
-
-INSECURE_SECRETS = {"", "dev-insecure-change-me", "change-me-to-a-long-random-string"}
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    if settings.AUTH_ENABLED and settings.SESSION_SECRET in INSECURE_SECRETS:
-        raise RuntimeError(
-            "AUTH_ENABLED=true requires a real SESSION_SECRET in .env "
-            "(e.g. `openssl rand -hex 32`); refusing to start with the "
-            "default one because it would make sessions forgeable."
-        )
-    init_db()
-    ensure_bootstrap_code()
-
 
 @app.get("/healthz")
 def healthz() -> dict:

@@ -1,0 +1,21 @@
+WELLS FARGO AUTOGRAPH VISA SIGNATURE CARD
+Statement Period 04/01/2026 to 04/28/2026
+
+Previous Balance                                                       500.00
+- Payments                                                             250.00
+- Other Credits                                                          0.00
++ Cash Advances                                                          0.00
++ Purchases, Balance Transfers & Other Charges                          84.34
++ Fees Charged                                                           0.00
++ Interest Charged                                                       0.00
+= New Balance                                                          334.34
+
+Payments
+     04/10     04/10     7431958620     ONLINE ACH PAYMENT THANK YOU          250.00
+     TOTAL PAYMENTS FOR THIS PERIOD                                           250.00
+
+Purchases, Balance Transfers & Other Charges
+1234     04/05     04/06     F2483906721     TRADER JOES #123 SANTA CRUZ CA    42.17
+1234     04/08     04/09     F2483906722     CHEVRON 0091 SANTA CRUZ CA        30.00
+1234     04/15     04/16     F2483906723     AMAZON MKTPL*AB12CD               12.17
+     TOTAL PURCHASES, BALANCE TRANSFERS & OTHER CHARGES FOR THIS PERIOD        84.34
