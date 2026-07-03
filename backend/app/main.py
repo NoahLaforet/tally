@@ -154,10 +154,12 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET,
                    same_site="lax", https_only=settings.COOKIE_SECURE,
                    max_age=settings.SESSION_MAX_AGE_DAYS * 86400)
 from .api_cards import router as cards_router  # noqa: E402
+from .demo import router as demo_router  # noqa: E402
 
 app.include_router(plaid_router)
 app.include_router(auth_router)
 app.include_router(cards_router)
+app.include_router(demo_router)
 
 @app.get("/healthz")
 def healthz() -> dict:
