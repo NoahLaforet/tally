@@ -16,23 +16,27 @@ from __future__ import annotations
 import calendar
 import json
 import re
+import secrets
+import time
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from .canonical import make_txn_uid
 from .config import settings
 from .db import engine, init_db
-from .models import (Account, Budget, Card, IncomeSource, Subscription,
-                     Transaction)
-from .ingest.pipeline import (ingest_file, ReconcileError, _assign_seq,
-                              _ensure_account, _match_transfers)
+from .models import (Account, Budget, Card, IncomeSource, IngestedFile,
+                     Subscription, Transaction)
+from .ingest.common import period_from_records
+from .ingest.pipeline import (ingest_file, sha256_file, ReconcileError,
+                              _assign_seq, _ensure_account, _match_transfers)
 from .ocr_apple import OCRUnavailable, ocr_image, parse_apple_card
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".heic")
@@ -247,6 +251,9 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
                  "months": [calendar.month_abbr[m] for _, m in win],
                  "window_months": months,
                  "full_months_with_data": int(n),
+                 "ocr_unreconciled": session.exec(
+                     select(func.count()).select_from(Transaction)
+                     .where(Transaction.origin == "ocr")).one(),
                  "generated": date.today().isoformat()},
         "spend": {
             "monthly_avg": round(total / n / 100, 2), "total6": round(total / 100, 2),
@@ -344,52 +351,103 @@ def _is_image_upload(file: UploadFile) -> bool:
     return name.endswith(IMAGE_EXTS)
 
 
-def _ingest_apple_screenshot(path: str) -> int:
-    """OCR an Apple Card screenshot and upsert its rows. Return the count added.
+# OCR text cannot be penny-reconciled (there is no printed total to check),
+# so screenshot ingestion is a two-step ceremony: parse to a PREVIEW the user
+# reviews, then an explicit confirm writes the rows, flagged origin='ocr'
+# with an unreconciled IngestedFile audit row.
+_OCR_PENDING: dict[str, dict] = {}  # token -> {records, hash, name, ts}
+_OCR_TTL_SECONDS = 1800
 
-    Mirrors the pipeline upsert: ensure the apple account exists, disambiguate
-    true duplicates, compute the deterministic txn_uid, skip rows that already
-    exist (on conflict do nothing), then re-run the transfer matcher.
-    """
-    text = ocr_image(path)
+
+def _prune_ocr_pending() -> None:
+    cutoff = time.time() - _OCR_TTL_SECONDS
+    for token in [t for t, p in _OCR_PENDING.items() if p["ts"] < cutoff]:
+        _OCR_PENDING.pop(token, None)
+
+
+def _ocr_preview(dest: Path) -> JSONResponse:
+    text = ocr_image(str(dest))
     records = parse_apple_card(text)
-    if not records:
-        return 0
+    file_hash = sha256_file(str(dest))
     _assign_seq(records)
+    preview = []
+    new_count = 0
     with Session(engine) as session:
+        if session.get(IngestedFile, file_hash) is not None:
+            return JSONResponse(content={"ok": True, "source": "ocr",
+                                         "duplicate": True, "added": 0})
+        for r in records:
+            exists = session.get(Transaction, r.txn_uid()) is not None
+            preview.append({
+                "date": r.posted_date.isoformat(),
+                "merchant": r.raw_description,
+                "amount": round(r.amount_cents / 100, 2),
+                "category": r.category,
+                "exists": exists,
+            })
+            if not exists:
+                new_count += 1
+    _prune_ocr_pending()
+    token = secrets.token_urlsafe(16)
+    _OCR_PENDING[token] = {"records": records, "hash": file_hash,
+                           "name": dest.name, "ts": time.time()}
+    return JSONResponse(content={
+        "ok": True, "source": "ocr", "needs_confirm": True, "token": token,
+        "preview": preview, "new": new_count,
+        "note": "OCR rows are not penny-reconciled; review before confirming.",
+    })
+
+
+class ConfirmBody(BaseModel):
+    token: str
+
+
+@app.post("/api/ingest/confirm")
+def api_ingest_confirm(body: ConfirmBody, _user=Depends(require_user)) -> JSONResponse:
+    _prune_ocr_pending()
+    pending = _OCR_PENDING.pop(body.token, None)
+    if pending is None:
+        return JSONResponse(status_code=410,
+                            content={"ok": False, "error": "preview_expired",
+                                     "detail": "Preview expired; upload the screenshot again."})
+    records = pending["records"]
+    with Session(engine) as session:
+        if session.get(IngestedFile, pending["hash"]) is not None:
+            return JSONResponse(content={"ok": True, "duplicate": True, "added": 0})
         account_id = _ensure_account(session, "apple")
         added = 0
         for r in records:
-            uid = make_txn_uid(
-                r.account_id,
-                r.posted_date,
-                r.amount_cents,
-                r.norm_merchant or r.raw_description,
-                r.intra_group_seq,
-            )
+            uid = r.txn_uid()
             if session.get(Transaction, uid) is not None:
                 continue
-            session.add(
-                Transaction(
-                    txn_uid=uid,
-                    account_id=account_id,
-                    posted_date=r.posted_date,
-                    amount_cents=r.amount_cents,
-                    raw_description=r.raw_description,
-                    norm_merchant=r.norm_merchant,
-                    category=r.category,
-                    category_source=r.category_source,
-                    is_transfer=r.is_transfer,
-                    transfer_group_id=r.transfer_group_id,
-                    source_file_hash=None,
-                    source_statement_id=r.source_statement_id,
-                    source_line=r.source_line,
-                )
-            )
+            session.add(Transaction(
+                txn_uid=uid,
+                account_id=account_id,
+                posted_date=r.posted_date,
+                amount_cents=r.amount_cents,
+                raw_description=r.raw_description,
+                norm_merchant=r.norm_merchant,
+                category=r.category,
+                category_source=r.category_source,
+                is_transfer=r.is_transfer,
+                transfer_group_id=r.transfer_group_id,
+                source_file_hash=pending["hash"],
+                source_statement_id=r.source_statement_id,
+                source_line=r.source_line,
+                origin="ocr",
+            ))
             added += 1
+        session.add(IngestedFile(
+            file_sha256=pending["hash"],
+            account="apple",
+            period=period_from_records(records) if records else None,
+            row_count=len(records),
+            reconciled=False,  # OCR has no totals to reconcile against
+        ))
         session.commit()
         _match_transfers(session)
-    return added
+    hub.publish("transactions:updated")
+    return JSONResponse(content={"ok": True, "added": added})
 
 
 def _safe_filename(raw: str | None) -> str:
@@ -422,16 +480,14 @@ async def api_ingest(file: UploadFile = File(...), _user=Depends(require_user)) 
     await _save_upload(file, dest)
 
     # Image upload: Apple Card has no aggregator, so users snap the Wallet app
-    # transaction list. OCR it on-device and upsert, leaving the statement path
-    # below untouched.
+    # transaction list. OCR it on-device and return a preview; rows are only
+    # written when /api/ingest/confirm is called with the returned token.
     if _is_image_upload(file):
         try:
-            added = _ingest_apple_screenshot(str(dest))
+            return _ocr_preview(dest)
         except OCRUnavailable as e:
             return JSONResponse(status_code=422,
                                 content={"ok": False, "error": "ocr_unavailable", "detail": str(e)})
-        hub.publish("transactions:updated")
-        return JSONResponse(content={"ok": True, "source": "ocr", "added": added})
 
     try:
         with Session(engine) as session:

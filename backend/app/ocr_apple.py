@@ -143,18 +143,33 @@ _SKIP = (
 )
 
 
-def _parse_date_header(line: str, default_year: int) -> date | None:
-    """Parse a date from a header line like 'June 28' or 'June 28, 2026'."""
+def _parse_date_header(line: str, default_year: int,
+                       today: date | None = None) -> date | None:
+    """Parse a date from a header line like 'June 28' or 'June 28, 2026'.
+
+    Wallet omits the year for recent transactions. A yearless date that lands
+    in the future belongs to the previous year (a December screenshot viewed
+    in January must not become next December).
+    """
     m = _DATE_HEADER.search(line)
     if not m:
         return None
     month = _MONTHS[m.group(1).lower()]
     day = int(m.group(2))
-    year = int(m.group(3)) if m.group(3) else default_year
+    explicit_year = m.group(3)
+    year = int(explicit_year) if explicit_year else default_year
     try:
-        return date(year, month, day)
+        parsed = date(year, month, day)
     except ValueError:
         return None
+    if not explicit_year:
+        today = today or date.today()
+        if (parsed - today).days > 7:
+            try:
+                parsed = date(year - 1, month, day)
+            except ValueError:
+                return None
+    return parsed
 
 
 def _is_skip(line: str) -> bool:

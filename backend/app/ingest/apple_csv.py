@@ -39,13 +39,24 @@ def parse(path: str, file_hash: str | None = None) -> ParseResult:
     records: list[CanonicalRecord] = []
     purchases = 0
     purchase_count = 0
+    data_rows = 0
+    bad_lines: list[int] = []
     with open(path, newline="", encoding="utf-8-sig") as f:
         for i, row in enumerate(csv.DictReader(f)):
+            if not any((v or "").strip() for v in row.values()):
+                continue  # blank line, not a data row
+            data_rows += 1
             raw = (row.get("Description") or "").strip()
             amount_field = (row.get("Amount (USD)") or "").strip()
             if not raw or not amount_field:
+                bad_lines.append(i + 2)
                 continue
-            printed = to_cents(amount_field)  # Apple: + purchase, - payment/credit
+            try:
+                printed = to_cents(amount_field)  # Apple: + purchase, - payment/credit
+                posted = _parse_date(row["Transaction Date"])
+            except (ValueError, KeyError):
+                bad_lines.append(i + 2)
+                continue
             amount_cents = -printed  # Tally: - outflow, + inflow
             merchant = norm_merchant(row.get("Merchant") or raw)
             category = categorize(raw, merchant, row.get("Category", ""))
@@ -56,7 +67,7 @@ def parse(path: str, file_hash: str | None = None) -> ParseResult:
             records.append(
                 CanonicalRecord(
                     account_id="apple",
-                    posted_date=_parse_date(row["Transaction Date"]),
+                    posted_date=posted,
                     amount_cents=amount_cents,
                     raw_description=raw,
                     norm_merchant=merchant,
@@ -72,11 +83,17 @@ def parse(path: str, file_hash: str | None = None) -> ParseResult:
             )
     detail = {
         "rows": len(records),
+        "data_rows": data_rows,
+        "bad_lines": bad_lines,
         "purchase_count": purchase_count,
         "purchases_cents": purchases,
     }
-    # Structural reconcile: a non empty export whose every row parsed cleanly.
-    reconciled = len(records) > 0
+    # Structural reconcile: the Apple export prints no totals row, so there is
+    # no penny identity to check. The gate is instead: at least one data row,
+    # and EVERY data row parsed into a real date and exact cent amount. A
+    # single unparseable line fails the whole file rather than silently
+    # dropping rows.
+    reconciled = data_rows > 0 and not bad_lines
     return ParseResult(
         account="apple",
         records=records,
