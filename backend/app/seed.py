@@ -30,7 +30,9 @@ STATEMENTS_DIR = settings.TALLY_SEED_STATEMENTS or str(
     os.path.join(settings.DATA_DIR, "statements"))
 SUBS_JS = settings.TALLY_SEED_SUBS
 
-# Reward rate matrix in basis points, sourced from card-strategy.md. 3% == 300.
+# Reward rate matrix in basis points (3% == 300). These are a starter set of
+# common US cards with public rate structures; edit or replace them in the
+# Settings view (or via /api/cards) to match your own lineup.
 _CANON_CATS = [
     "dining", "grocery", "gas", "shopping", "entertainment", "subscriptions",
     "fitness", "transit", "apple_services", "apple_hardware", "drugstore",
