@@ -52,18 +52,42 @@ CANDIDATE_MIN_COVERAGE = 0.4
 CANDIDATE_CAP = 12
 
 
+# Charges at or above this size get asked about once even with no matched
+# inflow: big dinners get split in cash, a laptop bought for a friend gets
+# repaid however it gets repaid. The user answers once; answers persist.
+BIG_CHARGE_CENTS = 20_000
+BIG_CAP = 10
+
+
 def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
                      window_days: int = WINDOW_DAYS) -> dict:
-    """Two tiers: 'exact' (inflows sum back to the cent, high confidence) and
-    'candidates' (large charges at least partially covered by inflows in the
-    window; the user judges). Both carry the matched inflow legs."""
+    """Three tiers: 'exact' (inflows sum back to the cent), 'candidates'
+    (large charges partially covered by P2P inflows), and 'big' (large
+    charges with no matched inflow at all; repayments in cash or before the
+    charge cleared are invisible, so the human gets one yes/no ask).
+
+    The repayment window is TWO-SIDED: parents often send tuition or rent
+    money days before the payment clears."""
+    # Function-level import: main.py imports this module's router, so the
+    # dependency must stay one-way at import time.
+    from .main import _instance_lexicons
+
+    noncons = _instance_lexicons(session)["nonconsumption"]
+
     txns = session.exec(
         select(Transaction).where(Transaction.is_transfer == False)  # noqa: E712
         .where(Transaction.reimbursement == None)  # noqa: E711
     ).all()
     accounts = {a.id: a.name for a in session.exec(select(Account)).all()}
 
-    outflows = sorted((t for t in txns if t.amount_cents <= -min_cents),
+    def already_excluded(t: Transaction) -> bool:
+        """Card payoffs etc. never count as spending, so asking is noise."""
+        d = (t.norm_merchant + " " + t.raw_description).lower()
+        return any(k in d for k in noncons)
+
+    outflows = sorted((t for t in txns
+                       if t.amount_cents <= -min_cents
+                       and not already_excluded(t)),
                       key=lambda t: t.posted_date, reverse=True)
     inflows = [t for t in txns
                if t.amount_cents > 0
@@ -89,9 +113,11 @@ def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
     used: set[str] = set()
     exact: list[dict] = []
     candidates: list[dict] = []
+    big: list[dict] = []
     for o in outflows:
         target = -o.amount_cents
-        lo, hi = o.posted_date, o.posted_date + timedelta(days=window_days)
+        lo = o.posted_date - timedelta(days=window_days)
+        hi = o.posted_date + timedelta(days=window_days)
         pool = [i for i in inflows
                 if i.txn_uid not in used and lo <= i.posted_date <= hi
                 and i.amount_cents <= target]
@@ -128,9 +154,14 @@ def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
         if part and covered >= target * CANDIDATE_MIN_COVERAGE:
             used.update(l.txn_uid for l in part)
             candidates.append(charge(o, part, covered / target))
+            continue
+        if target >= BIG_CHARGE_CENTS:
+            big.append(charge(o, [], 0.0))
 
     candidates.sort(key=lambda c: -c["amount"])
-    return {"exact": exact, "candidates": candidates[:CANDIDATE_CAP]}
+    big.sort(key=lambda c: -c["amount"])
+    return {"exact": exact, "candidates": candidates[:CANDIDATE_CAP],
+            "big": big[:BIG_CAP]}
 
 
 @router.get("/suggestions")

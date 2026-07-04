@@ -242,9 +242,10 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
     for t in txns:
         if t.is_transfer:
             continue
-        if t.reimbursement:
+        if t.reimbursement in ("group", "thirdparty"):
             # Fronted for the group or bought for someone else and repaid:
             # not the owner's spend, and the repayment inflow is not income.
+            # ('mine' means reviewed-and-kept; it counts normally.)
             if t.amount_cents < 0:
                 reimb_count += 1
                 reimb_total += -t.amount_cents

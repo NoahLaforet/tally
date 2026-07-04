@@ -132,7 +132,9 @@ def list_transactions(session: Session, f: dict, page: int = 1,
     return {"total": total, "page": page, "page_size": page_size, "rows": rows}
 
 
-REIMBURSEMENT_KINDS = {"group", "thirdparty"}
+# 'mine' = reviewed and kept as own spending; persists so the review queue
+# never asks about that charge again. Only group/thirdparty affect the math.
+REIMBURSEMENT_KINDS = {"group", "thirdparty", "mine"}
 
 
 def apply_patch(session: Session, txn_uid: str, category: str | None,
@@ -203,7 +205,7 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
         if kind not in REIMBURSEMENT_KINDS:
             raise ValueError("reimbursement must be 'group' or 'thirdparty'")
         txn.reimbursement = kind
-        if apply_to_merchant:
+        if apply_to_merchant and kind != "mine":
             # Default behavior: marking once creates a standing order, so
             # next month's rent excludes itself.
             rule = session.get(ReimbursementRule, txn.norm_merchant)

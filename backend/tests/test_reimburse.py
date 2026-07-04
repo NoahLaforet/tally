@@ -69,7 +69,7 @@ def test_no_suggestion_for_partial_or_late(db):
     db.add(a)
     db.commit()
     today = date.today()
-    _txn(db, a.id, today - timedelta(days=40), -180000, "TUITION SPRING")
+    _txn(db, a.id, today - timedelta(days=40), -180000, "UNIVERSITY EPAY SPRING")
     _txn(db, a.id, today - timedelta(days=5), 180000, "ZELLE LATE")  # 35d later
     _txn(db, a.id, today - timedelta(days=10), -50000, "CONCERT TICKETS")
     _txn(db, a.id, today - timedelta(days=9), 20000, "VENMO PART")  # partial
@@ -77,9 +77,12 @@ def test_no_suggestion_for_partial_or_late(db):
     out = find_suggestions(db)
     assert out["exact"] == []
     # the partial (40 percent covered) surfaces as a candidate, the late
-    # zelle does not (outside the window)
+    # zelle does not (outside the two-sided window)
     assert [c["merchant"] for c in out["candidates"]] == ["CONCERT TICKETS"]
     assert out["candidates"][0]["coverage"] == 0.4
+    # the tuition charge has no matched inflow but is big, so it lands in
+    # the ask-once tier
+    assert [b["merchant"] for b in out["big"]] == ["UNIVERSITY EPAY SPRING"]
 
 
 def test_payroll_never_counts_as_repayment(db):
@@ -92,6 +95,8 @@ def test_payroll_never_counts_as_repayment(db):
     db.commit()
     out = find_suggestions(db)
     assert out["exact"] == [] and out["candidates"] == []
+    # payroll never pairs, but the big rent charge still gets the one ask
+    assert [b["merchant"] for b in out["big"]] == ["RENT CHECK"]
 
 
 def test_marked_rows_are_skipped(db):
@@ -104,7 +109,41 @@ def test_marked_rows_are_skipped(db):
     _txn(db, a.id, today - timedelta(days=8), 180000, "ZELLE FROM MOM")
     db.commit()
     out = find_suggestions(db)
-    assert out["exact"] == [] and out["candidates"] == []
+    assert out["exact"] == [] and out["candidates"] == [] and out["big"] == []
+
+
+def test_inflow_before_charge_matches(db):
+    a = Account(name="Checking", kind="checking")
+    db.add(a)
+    db.commit()
+    today = date.today()
+    # parents send tuition money five days BEFORE the payment clears
+    _txn(db, a.id, today - timedelta(days=15), 400000, "ZELLE FROM MOM")
+    _txn(db, a.id, today - timedelta(days=10), -400000, "UNIVERSITY EPAY")
+    db.commit()
+    out = find_suggestions(db)
+    assert len(out["exact"]) == 1
+    assert out["exact"][0]["merchant"] == "UNIVERSITY EPAY"
+
+
+def test_mine_answer_silences_forever(db):
+    a = Account(name="Card", kind="credit")
+    db.add(a)
+    db.commit()
+    d = date.today() - timedelta(days=5)
+    _txn(db, a.id, d, -43304, "LSU GABRIELLA CAFE", reimbursement="mine")
+    db.commit()
+    out = find_suggestions(db)
+    assert out["big"] == []
+    # and it still counts as spending
+    from app.seed import seed_cards as _sc
+    _sc(db)
+    a.card_key = "debit"
+    db.add(a)
+    db.commit()
+    dash = compute_dashboard(db)
+    assert dash["spend"]["total6"] == 433.04
+    assert dash["meta"]["reimbursed_excluded"]["count"] == 0
 
 
 def test_dashboard_excludes_reimbursed(db):

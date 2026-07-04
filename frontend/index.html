@@ -898,7 +898,7 @@ async function setReimb(uid,kind,always){
   try{
     const j=await fetchJSON('/api/transactions/'+encodeURIComponent(uid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const n=num(j.updated_others);
-    toast(kind?('Excluded from your spending'+(always?(n>0?' \u00b7 rule saved, '+n+' more charge'+(n===1?'':'s')+' covered':' \u00b7 rule saved for this merchant'):'')):'Counted as your spending again');
+    toast(kind==='mine'?'Kept as your spending \u00b7 will not ask again':(kind?('Excluded from your spending'+(always?(n>0?' \u00b7 rule saved, '+n+' more charge'+(n===1?'':'s')+' covered':' \u00b7 rule saved for this merchant'):'')):'Counted as your spending again'));
     TXSUG.stale=true;
     await Promise.all([loadTx(),reloadCore()]);
     if(typeof loadReimbRules==='function') loadReimbRules.stale=true;
@@ -906,19 +906,19 @@ async function setReimb(uid,kind,always){
 }
 /* Repayment suggestions: charges followed by inflows adding back to the
    exact amount. Loaded once per session, refreshed after any marking. */
-const TXSUG={exact:[],candidates:[],loaded:false,stale:false,hidden:{}};
+const TXSUG={exact:[],candidates:[],big:[],loaded:false,stale:false,hidden:{}};
 function sugClass(uid){
   if(TXSUG.hidden[uid]) return '';
   if(TXSUG.exact.some(s=>s.uid===uid)) return ' class="sugrow"';
-  if(TXSUG.candidates.some(s=>s.uid===uid)) return ' class="candrow"';
+  if(TXSUG.candidates.some(s=>s.uid===uid)||TXSUG.big.some(s=>s.uid===uid)) return ' class="candrow"';
   return '';
 }
 async function loadReimbSuggestions(){
   if(TXSUG.loaded&&!TXSUG.stale) return;
   try{
     const j=await fetchJSON('/api/reimbursements/suggestions');
-    TXSUG.exact=j.exact||[]; TXSUG.candidates=j.candidates||[];
-  }catch(e){ TXSUG.exact=[]; TXSUG.candidates=[]; }
+    TXSUG.exact=j.exact||[]; TXSUG.candidates=j.candidates||[]; TXSUG.big=j.big||[];
+  }catch(e){ TXSUG.exact=[]; TXSUG.candidates=[]; TXSUG.big=[]; }
   TXSUG.loaded=true; TXSUG.stale=false;
   renderReimbBanner();
   renderTxBody();
@@ -927,7 +927,9 @@ function shortName(s,n){ s=String(s||''); return s.length>n?(s.slice(0,n-1)+'…
 const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function humanDate(iso){ const p=String(iso).split('-'); return MON[(+p[1]||1)-1]+' '+(+p[2]||''); }
 function daysAfter(a,b){ const d=Math.round((new Date(b)-new Date(a))/86400000);
-  return d<=0?'the same day':(d===1?'the next day':(d+' days later')); }
+  if(d===0) return 'the same day';
+  if(d<0) return d===-1?'the day before':((-d)+' days before');
+  return d===1?'the next day':(d+' days later'); }
 function legPhrase(s,l){
   const m=String(l.merchant||'');
   const z=m.match(/zelle\s+from\s+([a-z]+)/i);
