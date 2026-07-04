@@ -84,12 +84,22 @@ def _parse_date(value: str) -> date:
 
 
 def _parse_amount(value: str) -> int:
-    """TRNAMT decimal string straight to signed cents, exact string math."""
+    """TRNAMT decimal string straight to signed cents, exact string math.
+
+    European exports write comma decimals ('1234,56' or '1.234,56'); normalize
+    them to dot-decimal before the cents conversion, because to_cents treats
+    commas as thousands separators and would be off by orders of magnitude.
+    """
     s = value.strip()
     if s.startswith("+"):
         s = s[1:]
     if not s or not any(c.isdigit() for c in s):
         raise ValueError(f"bad OFX amount: {value!r}")
+    if "," in s:
+        last_comma, last_dot = s.rfind(","), s.rfind(".")
+        if last_comma > last_dot:
+            # Comma is the decimal separator; any dots are thousands marks.
+            s = s.replace(".", "").replace(",", ".")
     return to_cents(s)
 
 

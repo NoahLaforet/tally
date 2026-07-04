@@ -82,8 +82,12 @@ def load_demo(session: Session) -> dict:
 
     added = 0
     for months_back in range(6, -1, -1):
-        anchor = (today.replace(day=1) - timedelta(days=months_back * 30))
-        month_start = anchor.replace(day=1)
+        # Real calendar-month arithmetic; 30-day stepping lands two anchors
+        # in the same month around February and collides txn uids.
+        y, m = today.year, today.month - months_back
+        while m < 1:
+            y, m = y - 1, m + 12
+        month_start = date(y, m, 1)
         # Salary on the 1st, rent on the 3rd, card payment mid-month.
         add_txn(checking, month_start, 3450.00, "DEMO EMPLOYER PAYROLL",
                 "other", inflow=True)

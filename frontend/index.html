@@ -365,7 +365,12 @@ window.tallyToast=toast;
 function debounce(fn,ms){ let t; return function(){ clearTimeout(t); const a=arguments,s=this; t=setTimeout(()=>fn.apply(s,a),ms); }; }
 async function fetchJSON(url,opts){
   const r=await fetch(url,opts);
-  if(r.status===401){ const e=new Error('login required'); e.auth=true; throw e; }
+  if(r.status===401){
+    // Session expired mid-use: surface the login overlay from ANY call site
+    // (reads and writes alike) instead of quietly dropping the action.
+    if(window.tallyShowAuth) window.tallyShowAuth();
+    const e=new Error('login required'); e.auth=true; throw e;
+  }
   let j=null; try{ j=await r.json(); }catch(e){}
   if(!r.ok){ const e=new Error(fmtErr(j)||('HTTP '+r.status)); e.status=r.status; e.body=j; throw e; }
   return j;
@@ -1364,7 +1369,10 @@ function ensurePlaid(cb){
   s.id='plaidScript';
   s.src='https://cdn.plaid.com/link/v2/stable/link-initialize.js';
   s.onload=cb;
-  s.onerror=function(){ toast('Plaid Link could not load; check your connection.'); };
+  s.onerror=function(){
+    s.remove(); // a dead node would make every later click a silent no-op
+    toast('Plaid Link could not load; check your connection.');
+  };
   document.head.appendChild(s);
 }
 function openPlaidLink(token,recv){

@@ -20,7 +20,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 from .canonical import CanonicalRecord
 from .ingest.common import categorize, norm_merchant, to_cents
@@ -196,7 +196,6 @@ def parse_apple_card(text: str) -> list[CanonicalRecord]:
     current_date = today
     pending_merchant: str | None = None
     records: list[CanonicalRecord] = []
-    seen: set[tuple] = set()
 
     def emit(merchant_text: str, sign_char: str | None, amount_str: str, source_line: int) -> None:
         merchant_text = merchant_text.strip(" -·•\t")
@@ -210,10 +209,9 @@ def parse_apple_card(text: str) -> list[CanonicalRecord]:
         amount_cents = magnitude if is_inflow else -magnitude
         merchant = norm_merchant(merchant_text)
         category = categorize(merchant_text, merchant)
-        key = (current_date, amount_cents, merchant)
-        if key in seen:
-            return
-        seen.add(key)
+        # Genuine identical same-day charges are kept: the caller runs
+        # _assign_seq to give them distinct intra_group_seq values, and the
+        # review-before-import preview is the guard against OCR double reads.
         records.append(
             CanonicalRecord(
                 account_id="apple",
@@ -240,7 +238,17 @@ def parse_apple_card(text: str) -> list[CanonicalRecord]:
             current_date = hdr
             pending_merchant = None
             continue
-        if line.lower() in _WEEKDAYS or line.lower() in ("today", "yesterday"):
+        low = line.lower()
+        if low in _WEEKDAYS or low in ("today", "yesterday"):
+            # Wallet uses relative headers for the last week; resolve them so
+            # the rows do not all land on the OCR date.
+            if low == "today":
+                current_date = today
+            elif low == "yesterday":
+                current_date = today - timedelta(days=1)
+            else:
+                back = (today.weekday() - _WEEKDAYS.index(low)) % 7 or 7
+                current_date = today - timedelta(days=back)
             pending_merchant = None
             continue
 

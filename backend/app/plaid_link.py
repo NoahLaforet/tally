@@ -176,7 +176,14 @@ def _map_plaid_account(s: Session, pa, institution: str | None):
     inst = (institution or "").lower()
 
     def by_name(n: str):
-        return s.exec(select(Account).where(Account.name == n)).first()
+        """A canonical row is claimable only while unbound: a second card at
+        the same institution must NEVER merge into a row another Plaid
+        account already owns (it would overwrite balances and pool two
+        cards' transactions)."""
+        r = s.exec(select(Account).where(Account.name == n)).first()
+        if r is not None and r.plaid_account_id not in (None, pa.account_id):
+            return None
+        return r
 
     if "wells" in inst and subtype == "checking":
         row = by_name("Wells Fargo Everyday Checking")
@@ -185,12 +192,19 @@ def _map_plaid_account(s: Session, pa, institution: str | None):
         row = by_name("Wells Fargo Autograph")
     elif "chase" in inst and subtype == "credit card":
         row = by_name("Chase Freedom Unlimited")
-        if row is None:
+        if row is None and not s.exec(
+                select(Account).where(Account.name == "Chase Freedom Unlimited")).first():
             row = Account(name="Chase Freedom Unlimited", kind="credit",
                           institution="Chase", is_manual=False, card_key="chase")
             s.add(row)
     if row is None:
-        row = Account(name=(pa.name or "Linked account"),
+        # Distinct row per Plaid account; include the mask so two same-named
+        # accounts (e.g. two savings) stay distinguishable.
+        mask = getattr(pa, "mask", None)
+        display = (pa.name or "Linked account")
+        if mask and mask not in display:
+            display = f"{display} ...{mask}"
+        row = Account(name=display,
                       kind=_kind_from_subtype(subtype),
                       institution=institution, is_manual=False, card_key=None)
         s.add(row)

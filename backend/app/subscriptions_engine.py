@@ -14,6 +14,7 @@ in exact integer math.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import date
 
@@ -144,14 +145,22 @@ def _candidate_groups(session: Session) -> dict[str, list[Transaction]]:
 def _match_existing(subs: list[Subscription],
                     merchant: str) -> Subscription | None:
     """Match by norm_merchant first, then case-insensitive name containment in
-    either direction, so 'spotify' merges into a seeded 'Spotify Premium'."""
+    either direction, so 'spotify' merges into a seeded 'Spotify Premium'.
+
+    Containment only counts when the shorter side is a real word (>= 5 chars)
+    and the match sits on a word boundary; otherwise short merchants swallow
+    unrelated rows ('EA' would absorb 'Peacock', 'Uber' would absorb
+    'Uber Eats')."""
     for s in subs:
         if s.norm_merchant and s.norm_merchant == merchant:
             return s
     m = merchant.lower()
     for s in subs:
         n = (s.name or "").strip().lower()
-        if n and (n in m or m in n):
+        if not n or len(min(m, n, key=len)) < 5:
+            continue
+        shorter, longer = (m, n) if len(m) <= len(n) else (n, m)
+        if re.search(rf"(^|\W){re.escape(shorter)}($|\W)", longer):
             return s
     return None
 
