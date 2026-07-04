@@ -200,6 +200,8 @@
   .badge.flag{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent)}
   .badge.dim{color:var(--text-faint);background:var(--chart-track)}
   .badge.reimb{color:var(--good);background:color-mix(in srgb,var(--good) 15%,transparent)}
+  tr.sugrow td{background:color-mix(in srgb,var(--good) 7%,transparent)}
+  tr.candrow td{background:color-mix(in srgb,var(--warn) 6%,transparent)}
   .swatch{width:10px;height:10px;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:7px;box-shadow:0 0 8px -1px currentColor}
   .dot{width:8px;height:8px;border-radius:99px;display:inline-block;flex:none}
   .lockbtn{background:none;border:none;cursor:pointer;color:var(--text-faint);padding:4px;border-radius:6px;display:inline-grid;place-items:center}
@@ -832,7 +834,7 @@ function renderTxBody(){
     TX.rows.map(t=>{
       const credit=num(t.amount)>0;
       const amt=credit?('<span class="pos">+'+fmt2(t.amount)+'</span>'):fmt2(-t.amount);
-      return '<tr data-uid="'+esc(t.uid)+'">'+
+      return '<tr data-uid="'+esc(t.uid)+'"'+sugClass(t.uid)+'>'+
         '<td class="num" style="text-align:left;color:var(--text-dim)">'+esc(t.date)+'</td>'+
         '<td title="'+esc(t.description||'')+'"><b style="font-weight:550">'+esc(t.merchant||'')+'</b>'+txBadges(t)+'</td>'+
         '<td class="num">'+amt+'</td>'+
@@ -889,32 +891,51 @@ async function setReimb(uid,kind){
 }
 /* Repayment suggestions: charges followed by inflows adding back to the
    exact amount. Loaded once per session, refreshed after any marking. */
-const TXSUG={rows:[],loaded:false,stale:false,hidden:{}};
+const TXSUG={exact:[],candidates:[],loaded:false,stale:false,hidden:{}};
+function sugClass(uid){
+  if(TXSUG.hidden[uid]) return '';
+  if(TXSUG.exact.some(s=>s.uid===uid)) return ' class="sugrow"';
+  if(TXSUG.candidates.some(s=>s.uid===uid)) return ' class="candrow"';
+  return '';
+}
 async function loadReimbSuggestions(){
   if(TXSUG.loaded&&!TXSUG.stale) return;
-  try{ TXSUG.rows=await fetchJSON('/api/reimbursements/suggestions'); }
-  catch(e){ TXSUG.rows=[]; }
+  try{
+    const j=await fetchJSON('/api/reimbursements/suggestions');
+    TXSUG.exact=j.exact||[]; TXSUG.candidates=j.candidates||[];
+  }catch(e){ TXSUG.exact=[]; TXSUG.candidates=[]; }
   TXSUG.loaded=true; TXSUG.stale=false;
   renderReimbBanner();
+  renderTxBody();
+}
+function sugRow(s,extra){
+  return '<div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
+    '<span>'+esc(s.date)+' · <b>'+esc(s.merchant)+'</b> '+fmt2(s.amount)+extra+' \u2190 '+
+    s.repaid_by.map(l=>esc(l.merchant)+' '+fmt2(l.amount)).join(' + ')+'</span>'+
+    '<button class="minibtn" data-sug-group="'+esc(s.uid)+'">Group front</button>'+
+    '<button class="minibtn" data-sug-third="'+esc(s.uid)+'">Someone else\u2019s</button>'+
+    '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'">Skip</button></div>';
 }
 function renderReimbBanner(){
   const host=el('txSuggest'); if(!host) return;
-  const rows=TXSUG.rows.filter(s=>!TXSUG.hidden[s.uid]);
-  if(!rows.length){ host.innerHTML=''; return; }
-  host.innerHTML='<div class="callout info" role="region" aria-label="Possible repayments">'+
-    '<div style="flex:1"><b>'+rows.length+' charge'+(rows.length===1?' looks':'s look')+' paid back.</b> '+
-    'Money went out and the same amount came back within two weeks. Exclude them from your spending?'+
-    rows.slice(0,5).map(s=>'<div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
-      '<span>'+esc(s.date)+' · <b>'+esc(s.merchant)+'</b> '+fmt2(s.amount)+' \u2190 '+
-      s.repaid_by.map(l=>esc(l.merchant)).join(' + ')+'</span>'+
-      '<button class="minibtn" data-sug-group="'+esc(s.uid)+'">Group front</button>'+
-      '<button class="minibtn" data-sug-third="'+esc(s.uid)+'">Someone else\u2019s</button>'+
-      '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'">Skip</button></div>').join('')+
-    (rows.length>5?'<div style="margin-top:7px;color:var(--text-dim)">and '+(rows.length-5)+' more below as \u21A9 on each row</div>':'')+
-    '</div></div>';
+  const ex=TXSUG.exact.filter(s=>!TXSUG.hidden[s.uid]);
+  const cand=TXSUG.candidates.filter(s=>!TXSUG.hidden[s.uid]);
+  if(!ex.length&&!cand.length){ host.innerHTML=''; return; }
+  let inner='';
+  if(ex.length){
+    inner+='<b>'+ex.length+' charge'+(ex.length===1?' looks':'s look')+' fully paid back.</b> '+
+      'The same amount came back within two weeks.'+ex.map(s=>sugRow(s,'')).join('');
+  }
+  if(cand.length){
+    inner+='<div style="margin-top:'+(ex.length?'14px':'0')+'"><b>'+cand.length+' large charge'+(cand.length===1?'':'s')+
+      ' with partial paybacks.</b> Group buys where the venmos do not sum exactly, or someone still owes.</div>'+
+      cand.map(s=>sugRow(s,' <span style="color:var(--text-dim)">('+Math.round(num(s.coverage)*100)+'% covered)</span>')).join('');
+  }
+  host.innerHTML='<div class="callout info" role="region" aria-label="Repayment review">'+
+    '<div style="flex:1">'+inner+'</div></div>';
   host.querySelectorAll('[data-sug-group]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-group'),'group')));
   host.querySelectorAll('[data-sug-third]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-third'),'thirdparty')));
-  host.querySelectorAll('[data-sug-skip]').forEach(b=>b.addEventListener('click',()=>{ TXSUG.hidden[b.getAttribute('data-sug-skip')]=1; renderReimbBanner(); }));
+  host.querySelectorAll('[data-sug-skip]').forEach(b=>b.addEventListener('click',()=>{ TXSUG.hidden[b.getAttribute('data-sug-skip')]=1; renderReimbBanner(); renderTxBody(); }));
 }
 function openCatEditor(btn){
   const uid=btn.getAttribute('data-editcat');

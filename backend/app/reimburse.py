@@ -37,8 +37,17 @@ _NOT_REPAYMENT = ("payroll", "direct dep", "interest", "dividend", "refund",
                   "cash back", "daily cash", "tax ref")
 
 
+# A large charge with partial paybacks is worth a human look even without an
+# exact-sum match (venmo legs round differently, someone still owes a share).
+CANDIDATE_MIN_COVERAGE = 0.25
+CANDIDATE_CAP = 12
+
+
 def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
-                     window_days: int = WINDOW_DAYS) -> list[dict]:
+                     window_days: int = WINDOW_DAYS) -> dict:
+    """Two tiers: 'exact' (inflows sum back to the cent, high confidence) and
+    'candidates' (large charges at least partially covered by inflows in the
+    window; the user judges). Both carry the matched inflow legs."""
     txns = session.exec(
         select(Transaction).where(Transaction.is_transfer == False)  # noqa: E712
         .where(Transaction.reimbursement == None)  # noqa: E711
@@ -52,8 +61,25 @@ def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
                and not any(k in (t.norm_merchant + " " + t.raw_description).lower()
                            for k in _NOT_REPAYMENT)]
 
+    def leg(l: Transaction) -> dict:
+        return {"uid": l.txn_uid, "date": l.posted_date.isoformat(),
+                "merchant": l.norm_merchant,
+                "amount": round(l.amount_cents / 100, 2),
+                "account": accounts.get(l.account_id, "")}
+
+    def charge(o: Transaction, legs: list[Transaction], coverage: float) -> dict:
+        return {"uid": o.txn_uid,
+                "date": o.posted_date.isoformat(),
+                "merchant": o.norm_merchant,
+                "description": o.raw_description,
+                "amount": round(-o.amount_cents / 100, 2),
+                "account": accounts.get(o.account_id, ""),
+                "coverage": round(coverage, 2),
+                "repaid_by": [leg(l) for l in legs]}
+
     used: set[str] = set()
-    out = []
+    exact: list[dict] = []
+    candidates: list[dict] = []
     for o in outflows:
         target = -o.amount_cents
         lo, hi = o.posted_date, o.posted_date + timedelta(days=window_days)
@@ -74,28 +100,23 @@ def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
                         break
                 if legs:
                     break
-        if not legs:
+        if legs:
+            used.update(l.txn_uid for l in legs)
+            exact.append(charge(o, legs, 1.0))
             continue
-        used.update(l.txn_uid for l in legs)
-        out.append({
-            "uid": o.txn_uid,
-            "date": o.posted_date.isoformat(),
-            "merchant": o.norm_merchant,
-            "description": o.raw_description,
-            "amount": round(-o.amount_cents / 100, 2),
-            "account": accounts.get(o.account_id, ""),
-            "repaid_by": [{
-                "uid": l.txn_uid, "date": l.posted_date.isoformat(),
-                "merchant": l.norm_merchant,
-                "amount": round(l.amount_cents / 100, 2),
-                "account": accounts.get(l.account_id, ""),
-            } for l in legs],
-        })
-    return out
+        # Partial coverage: the biggest inflows first, up to MAX_LEGS + 1.
+        pool.sort(key=lambda i: -i.amount_cents)
+        part = pool[:MAX_LEGS + 1]
+        covered = sum(i.amount_cents for i in part)
+        if part and covered >= target * CANDIDATE_MIN_COVERAGE:
+            candidates.append(charge(o, part, covered / target))
+
+    candidates.sort(key=lambda c: -c["amount"])
+    return {"exact": exact, "candidates": candidates[:CANDIDATE_CAP]}
 
 
 @router.get("/suggestions")
-def api_suggestions(min_dollars: float = 150.0, window_days: int = WINDOW_DAYS) -> list[dict]:
+def api_suggestions(min_dollars: float = 150.0, window_days: int = WINDOW_DAYS) -> dict:
     min_cents = max(1, round(min_dollars * 100))
     window_days = max(1, min(60, window_days))
     with Session(engine) as s:

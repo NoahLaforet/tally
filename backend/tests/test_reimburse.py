@@ -42,9 +42,10 @@ def test_single_exact_repayment_suggested(db):
     _txn(db, a.id, today - timedelta(days=10), -180000, "APARTMENT RENT")
     _txn(db, a.id, today - timedelta(days=8), 180000, "ZELLE FROM MOM")
     db.commit()
-    out = find_suggestions(db)
+    out = find_suggestions(db)["exact"]
     assert len(out) == 1
     assert out[0]["merchant"] == "APARTMENT RENT"
+    assert out[0]["coverage"] == 1.0
     assert len(out[0]["repaid_by"]) == 1
     assert out[0]["repaid_by"][0]["amount"] == 1800.0
 
@@ -58,7 +59,7 @@ def test_multi_leg_group_repayment(db):
     _txn(db, a.id, today - timedelta(days=5), 10000, "VENMO ALEX")
     _txn(db, a.id, today - timedelta(days=4), 20000, "VENMO SAM")
     db.commit()
-    out = find_suggestions(db)
+    out = find_suggestions(db)["exact"]
     assert len(out) == 1
     assert {l["merchant"] for l in out[0]["repaid_by"]} == {"VENMO ALEX", "VENMO SAM"}
 
@@ -73,7 +74,12 @@ def test_no_suggestion_for_partial_or_late(db):
     _txn(db, a.id, today - timedelta(days=10), -50000, "CONCERT TICKETS")
     _txn(db, a.id, today - timedelta(days=9), 20000, "VENMO PART")  # partial
     db.commit()
-    assert find_suggestions(db) == []
+    out = find_suggestions(db)
+    assert out["exact"] == []
+    # the partial (40 percent covered) surfaces as a candidate, the late
+    # zelle does not (outside the window)
+    assert [c["merchant"] for c in out["candidates"]] == ["CONCERT TICKETS"]
+    assert out["candidates"][0]["coverage"] == 0.4
 
 
 def test_payroll_never_counts_as_repayment(db):
@@ -84,7 +90,8 @@ def test_payroll_never_counts_as_repayment(db):
     _txn(db, a.id, today - timedelta(days=9), -320000, "RENT CHECK")
     _txn(db, a.id, today - timedelta(days=7), 320000, "EMPLOYER PAYROLL DEP")
     db.commit()
-    assert find_suggestions(db) == []
+    out = find_suggestions(db)
+    assert out["exact"] == [] and out["candidates"] == []
 
 
 def test_marked_rows_are_skipped(db):
@@ -96,7 +103,8 @@ def test_marked_rows_are_skipped(db):
          reimbursement="group")
     _txn(db, a.id, today - timedelta(days=8), 180000, "ZELLE FROM MOM")
     db.commit()
-    assert find_suggestions(db) == []
+    out = find_suggestions(db)
+    assert out["exact"] == [] and out["candidates"] == []
 
 
 def test_dashboard_excludes_reimbursed(db):
