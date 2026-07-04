@@ -138,6 +138,10 @@ def _candidate_groups(session: Session) -> dict[str, list[Transaction]]:
     for t in txns:
         if not t.norm_merchant:
             continue
+        # Fronted bills (AT&T family plan style) are repaid, so they are not
+        # part of the owner's recurring spend; transfers never are.
+        if t.reimbursement in ("group", "thirdparty") or t.category == "transfer":
+            continue
         groups.setdefault(t.norm_merchant, []).append(t)
     return {m: g for m, g in groups.items() if len(g) >= _MIN_CHARGES}
 

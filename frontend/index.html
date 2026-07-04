@@ -399,12 +399,13 @@ let NW=null, PLAID=null, KEYS=null, AUTHME=null;
 const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:''};
 let ACTIVE='overview';
 
-const CATCOLOR={dining:'#fb7185',grocery:'#34d399',gas:'#fbbf24',apple_hardware:'#a78bfa',apple_services:'#a78bfa',
+const CATCOLOR={transfer:'#64748b',dining:'#fb7185',grocery:'#34d399',gas:'#fbbf24',apple_hardware:'#a78bfa',apple_services:'#a78bfa',
   shopping:'#818cf8',entertainment:'#22d3ee',subscriptions:'#c084fc',fitness:'#f472b6',transit:'#60a5fa',
   drugstore:'#94a3b8',streaming:'#c084fc',phone:'#38bdf8',travel:'#fb923c',other:'#71717a'};
 const CARDCOLORS=['#b9bcc2','#3b82f6','#d4a017','#f0506e','#34d399','#a78bfa','#fb923c'];
 function catColor(id){ return CATCOLOR[id]||'#7b8cff'; }
 function catLabel(id){
+  if(id==='transfer') return 'Account transfers';
   const c=(D&&D.categories||[]).find(x=>x.id===id); if(c) return c.label;
   return String(id||'').replace(/_/g,' ').replace(/\b\w/g,ch=>ch.toUpperCase());
 }
@@ -773,7 +774,8 @@ function renderTransactions(){
   }
   const catSel=el('txCat');
   const cur=catSel.value;
-  catSel.innerHTML='<option value="">All categories</option>'+allCats().map(c=>'<option value="'+esc(c)+'">'+esc(catLabel(c))+'</option>').join('');
+  const fcats=allCats(); if(!fcats.includes('transfer')) fcats.push('transfer');
+  catSel.innerHTML='<option value="">All categories</option>'+fcats.map(c=>'<option value="'+esc(c)+'">'+esc(catLabel(c))+'</option>').join('');
   catSel.value=cur;
   const aSel=el('txAcct'); const curA=aSel.value;
   aSel.innerHTML='<option value="">All accounts</option>'+ACCOUNTS.map(a=>'<option value="'+a.id+'">'+esc(a.name)+'</option>').join('');

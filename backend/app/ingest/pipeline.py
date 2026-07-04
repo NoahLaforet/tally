@@ -152,8 +152,10 @@ def _match_transfers(session: Session) -> int:
             gid = _transfer_group_id(a.txn_uid, b.txn_uid)
             a.is_transfer = True
             a.transfer_group_id = gid
+            a.category = "transfer"
             b.is_transfer = True
             b.transfer_group_id = gid
+            b.category = "transfer"
             session.add(a)
             session.add(b)
             used.add(a.txn_uid)
@@ -171,6 +173,7 @@ def _match_transfers(session: Session) -> int:
             continue
         if looks_like_self_transfer(t.raw_description):
             t.is_transfer = True
+            t.category = "transfer"
             session.add(t)
             solo += 1
     if matched or solo:

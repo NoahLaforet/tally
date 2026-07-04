@@ -71,6 +71,7 @@ CAT_LABEL = {
     "shopping": "Shopping", "entertainment": "Entertainment", "subscriptions": "Subscriptions",
     "fitness": "Fitness", "transit": "Transit & Parking", "drugstore": "Drugstore",
     "streaming": "Streaming", "other": "Other / Misc",
+    "transfer": "Account transfers",
 }
 # Merchant lexicons drive the gambling tracker, the delivery breakdown, and
 # the not-consumption exclusions (card payoffs, P2P, internal moves that the
@@ -240,7 +241,7 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
     reimb_count = 0
     reimb_total = 0
     for t in txns:
-        if t.is_transfer:
+        if t.is_transfer or t.category == "transfer":
             continue
         if t.reimbursement in ("group", "thirdparty"):
             # Fronted for the group or bought for someone else and repaid:
