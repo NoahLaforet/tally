@@ -46,7 +46,9 @@ _P2P = ("zelle", "venmo", "cash app", "cashapp", "paypal", "apple cash")
 
 # A large charge with partial paybacks is worth a human look even without an
 # exact-sum match (venmo legs round differently, someone still owes a share).
-CANDIDATE_MIN_COVERAGE = 0.25
+# Under 40 percent covered the pairing is usually coincidence, which erodes
+# trust in the whole queue, so those stay quiet.
+CANDIDATE_MIN_COVERAGE = 0.4
 CANDIDATE_CAP = 12
 
 

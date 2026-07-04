@@ -923,33 +923,46 @@ async function loadReimbSuggestions(){
   renderReimbBanner();
   renderTxBody();
 }
-function shortName(s,n){ s=String(s||''); return s.length>n?(s.slice(0,n-1)+'\u2026'):s; }
-function sugRow(s,pct){
-  const legs=s.repaid_by.map(l=>shortName(l.merchant,14)+' '+fmt2(l.amount)).join(' + ');
+function shortName(s,n){ s=String(s||''); return s.length>n?(s.slice(0,n-1)+'…'):s; }
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function humanDate(iso){ const p=String(iso).split('-'); return MON[(+p[1]||1)-1]+' '+(+p[2]||''); }
+function daysAfter(a,b){ const d=Math.round((new Date(b)-new Date(a))/86400000);
+  return d<=0?'the same day':(d===1?'the next day':(d+' days later')); }
+function legPhrase(s,l){
+  const m=String(l.merchant||'');
+  const z=m.match(/zelle\s+from\s+([a-z]+)/i);
+  const who=z?(z[1][0].toUpperCase()+z[1].slice(1).toLowerCase()+' sent you'):
+    (/venmo/i.test(m)?'a Venmo brought back':'you got back');
+  return who+' '+fmt2(l.amount)+' '+daysAfter(s.date,l.date);
+}
+function sugRow(s){
+  const legs=s.repaid_by.map(l=>legPhrase(s,l)).join(', and ');
+  const full=num(s.coverage)>=0.99;
   return '<div class="sugline">'+
     '<span class="sugmain" title="'+esc(s.description||s.merchant)+'">'+
-      '<b>'+esc(shortName(s.merchant,22))+'</b> '+fmt2(s.amount)+
-      '<span class="sugsub">'+esc(s.date.slice(5))+' \u00b7 \u2190 '+esc(legs)+(pct?(' \u00b7 '+pct):'')+'</span></span>'+
-    '<button class="minibtn" data-sug-group="'+esc(s.uid)+'" title="I fronted a shared bill and was paid back">Group</button>'+
-    '<button class="minibtn" data-sug-third="'+esc(s.uid)+'" title="Bought for someone else; they paid me back">Not mine</button>'+
-    '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'" aria-label="Dismiss suggestion" title="Not a repayment">\u00d7</button></div>';
+      '<b>'+esc(shortName(s.merchant,24))+'</b> · '+fmt2(s.amount)+' on '+esc(humanDate(s.date))+
+      '<span class="sugsub">'+esc(legs)+(full?'':' · covers part of it')+'</span></span>'+
+    '<button class="minibtn" data-sug-yes="'+esc(s.uid)+'" data-full="'+(full?'1':'0')+'">Yes, exclude it</button>'+
+    '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'" title="No, this was my spending">No</button></div>';
 }
 function renderReimbBanner(){
   const host=el('txSuggest'); if(!host) return;
-  const ex=TXSUG.exact.filter(s=>!TXSUG.hidden[s.uid]);
-  const cand=TXSUG.candidates.filter(s=>!TXSUG.hidden[s.uid]);
-  if(!ex.length&&!cand.length){ host.innerHTML=''; return; }
-  const items=ex.map(s=>sugRow(s,'')).concat(
-    cand.map(s=>sugRow(s,Math.round(num(s.coverage)*100)+'%')));
+  const items=TXSUG.exact.concat(TXSUG.candidates).filter(s=>!TXSUG.hidden[s.uid]);
+  if(!items.length){ host.innerHTML=''; return; }
   const shown=items.slice(0,6);
   host.innerHTML='<div class="callout info" role="region" aria-label="Repayment review" style="display:block">'+
-    '<b>'+items.length+' possible repayment'+(items.length===1?'':'s')+'</b>'+
-    '<span class="sugsub" style="margin-left:8px">money out, money back \u00b7 marking saves a rule for the merchant</span>'+
-    shown.join('')+
-    (items.length>6?'<div class="sugsub" style="margin-top:6px">'+(items.length-6)+' more \u2014 look for tinted rows below</div>':'')+
+    '<b>Did someone pay you back for these?</b>'+
+    '<div class="sugsub" style="margin-left:0;margin-top:2px">Money came in shortly after each of these charges. Saying yes takes the charge out of your spending numbers; the transaction itself stays.</div>'+
+    shown.map(sugRow).join('')+
+    (items.length>6?'<div class="sugsub" style="margin-top:6px;margin-left:0">'+(items.length-6)+' more — green and amber rows in the table below</div>':'')+
     '</div>';
-  host.querySelectorAll('[data-sug-group]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-group'),'group',true)));
-  host.querySelectorAll('[data-sug-third]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-third'),'thirdparty',true)));
+  host.querySelectorAll('[data-sug-yes]').forEach(b=>b.addEventListener('click',()=>{
+    // Fully repaid reads as someone else's purchase, partial as a group
+    // front; just a label, the math is identical. One-time by design:
+    // standing rules come from the row menu, so splitting one Amazon order
+    // never silently excludes future Amazon purchases.
+    setReimb(b.getAttribute('data-sug-yes'), b.getAttribute('data-full')==='1'?'thirdparty':'group', false);
+  }));
   host.querySelectorAll('[data-sug-skip]').forEach(b=>b.addEventListener('click',()=>{ TXSUG.hidden[b.getAttribute('data-sug-skip')]=1; renderReimbBanner(); renderTxBody(); }));
 }
 function openCatEditor(btn){
