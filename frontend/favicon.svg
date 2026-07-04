@@ -1,1 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="2.5" y="2.5" width="27" height="27" rx="6" fill="#d4f23e" stroke="#16130b" stroke-width="3"/><text x="16" y="24" font-family="Archivo,Arial,sans-serif" font-size="22" font-weight="900" text-anchor="middle" fill="#16130b">T</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4d7cff"/>
+      <stop offset="1" stop-color="#7b5cff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="28" height="28" rx="9" fill="url(#g)"/>
+  <path d="M9 11h14M16 11v12" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+</svg>
