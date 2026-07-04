@@ -15,6 +15,10 @@ backend/data/
 *.qbo
 statements/
 uploads/
+# ...but synthetic test fixtures are not real data and must ship.
+!backend/tests/fixtures/*.ofx
+!backend/tests/fixtures/*.qfx
+!backend/tests/fixtures/*.qbo
 
 # Secrets / env
 .env
