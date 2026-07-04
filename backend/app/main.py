@@ -86,7 +86,10 @@ DEFAULT_LEXICONS = {
                        "credit card retry", "credit card payment",
                        "savings transfer", "online transfer", "transfer to",
                        "zelle to", "venmo payment", "bill pay", "tuition",
-                       "money transfer authorized"],
+                       "money transfer authorized",
+                       # Plaid emits a synthetic carryforward row when a card
+                       # is first linked; it is a balance, not a purchase.
+                       "last statement bal", "beginning balance"],
 }
 
 

@@ -212,6 +212,24 @@ def looks_like_transfer(raw_description: str) -> bool:
     return any(tok in d for tok in TRANSFER_LEXICON)
 
 
+# Bank-generated phrasings for a move between the owner's OWN accounts.
+# These are transfers even when the other leg is not in the database (a
+# savings account with no imported history, for example). Deliberately
+# strict: Zelle/Venmo and bill payments never match, because money moving
+# to another person is not an internal move.
+_SELF_TRANSFER = re.compile(
+    r"\b(?:recurring|online|internal|mobile)\s+transfer\s+(?:to|from|ref)\b"
+    r"|\bsavings\s+transfer\b"
+    r"|\btransfer\s+(?:to|from)\s+(?:savings|checking|shares?)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_self_transfer(raw_description: str) -> bool:
+    """True for descriptions that unambiguously mark an own-account move."""
+    return _SELF_TRANSFER.search(raw_description) is not None
+
+
 @dataclass
 class ParseResult:
     """What every statement parser returns.

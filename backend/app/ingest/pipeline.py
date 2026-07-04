@@ -31,7 +31,8 @@ from ..config import settings
 from ..db import engine
 from ..models import Account, IngestedFile, Transaction
 from . import apple_csv, ofx, wf_pdf
-from .common import ParseResult, looks_like_transfer, pdftext
+from .common import (ParseResult, looks_like_self_transfer,
+                     looks_like_transfer, pdftext)
 from .convergence import find_plaid_shadow, learned_category
 
 # account key -> (display name, kind, institution, rewards card_key)
@@ -159,9 +160,22 @@ def _match_transfers(session: Session) -> int:
             used.add(b.txn_uid)
             matched += 2
             break
-    if matched:
+
+    # Second pass: a bank-phrased move between the owner's own accounts is a
+    # transfer even when its other leg was never imported (savings account
+    # with no history, one-sided statement coverage). Solo flag, no group id,
+    # so a later import of the missing leg can still pair it above.
+    solo = 0
+    for t in candidates:
+        if t.txn_uid in used or t.is_transfer:
+            continue
+        if looks_like_self_transfer(t.raw_description):
+            t.is_transfer = True
+            session.add(t)
+            solo += 1
+    if matched or solo:
         session.commit()
-    return matched
+    return matched + solo
 
 
 def ingest_file(path: str, session: Session | None = None) -> dict:
