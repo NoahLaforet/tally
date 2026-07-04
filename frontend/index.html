@@ -201,6 +201,10 @@
   .badge.dim{color:var(--text-faint);background:var(--chart-track)}
   .badge.reimb{color:var(--good);background:color-mix(in srgb,var(--good) 15%,transparent)}
   tr.sugrow td{background:color-mix(in srgb,var(--good) 7%,transparent)}
+  .sugline{display:flex;gap:6px;align-items:center;margin-top:7px;font-size:13px;min-width:0}
+  .sugline .minibtn{padding:3px 9px;font-size:11px;flex:none}
+  .sugmain{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sugsub{color:var(--text-dim);font-size:12px;margin-left:6px}
   tr.candrow td{background:color-mix(in srgb,var(--warn) 6%,transparent)}
   .swatch{width:10px;height:10px;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:7px;box-shadow:0 0 8px -1px currentColor}
   .dot{width:8px;height:8px;border-radius:99px;display:inline-block;flex:none}
@@ -919,31 +923,31 @@ async function loadReimbSuggestions(){
   renderReimbBanner();
   renderTxBody();
 }
-function sugRow(s,extra){
-  return '<div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
-    '<span>'+esc(s.date)+' · <b>'+esc(s.merchant)+'</b> '+fmt2(s.amount)+extra+' \u2190 '+
-    s.repaid_by.map(l=>esc(l.merchant)+' '+fmt2(l.amount)).join(' + ')+'</span>'+
-    '<button class="minibtn" data-sug-group="'+esc(s.uid)+'">Group front</button>'+
-    '<button class="minibtn" data-sug-third="'+esc(s.uid)+'">Someone else\u2019s</button>'+
-    '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'">Skip</button></div>';
+function shortName(s,n){ s=String(s||''); return s.length>n?(s.slice(0,n-1)+'\u2026'):s; }
+function sugRow(s,pct){
+  const legs=s.repaid_by.map(l=>shortName(l.merchant,14)+' '+fmt2(l.amount)).join(' + ');
+  return '<div class="sugline">'+
+    '<span class="sugmain" title="'+esc(s.description||s.merchant)+'">'+
+      '<b>'+esc(shortName(s.merchant,22))+'</b> '+fmt2(s.amount)+
+      '<span class="sugsub">'+esc(s.date.slice(5))+' \u00b7 \u2190 '+esc(legs)+(pct?(' \u00b7 '+pct):'')+'</span></span>'+
+    '<button class="minibtn" data-sug-group="'+esc(s.uid)+'" title="I fronted a shared bill and was paid back">Group</button>'+
+    '<button class="minibtn" data-sug-third="'+esc(s.uid)+'" title="Bought for someone else; they paid me back">Not mine</button>'+
+    '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'" aria-label="Dismiss suggestion" title="Not a repayment">\u00d7</button></div>';
 }
 function renderReimbBanner(){
   const host=el('txSuggest'); if(!host) return;
   const ex=TXSUG.exact.filter(s=>!TXSUG.hidden[s.uid]);
   const cand=TXSUG.candidates.filter(s=>!TXSUG.hidden[s.uid]);
   if(!ex.length&&!cand.length){ host.innerHTML=''; return; }
-  let inner='';
-  if(ex.length){
-    inner+='<b>'+ex.length+' charge'+(ex.length===1?' looks':'s look')+' fully paid back.</b> '+
-      'The same amount came back within two weeks.'+ex.map(s=>sugRow(s,'')).join('');
-  }
-  if(cand.length){
-    inner+='<div style="margin-top:'+(ex.length?'14px':'0')+'"><b>'+cand.length+' large charge'+(cand.length===1?'':'s')+
-      ' with partial paybacks.</b> Group buys where the venmos do not sum exactly, or someone still owes.</div>'+
-      cand.map(s=>sugRow(s,' <span style="color:var(--text-dim)">('+Math.round(num(s.coverage)*100)+'% covered)</span>')).join('');
-  }
-  host.innerHTML='<div class="callout info" role="region" aria-label="Repayment review">'+
-    '<div style="flex:1">'+inner+'</div></div>';
+  const items=ex.map(s=>sugRow(s,'')).concat(
+    cand.map(s=>sugRow(s,Math.round(num(s.coverage)*100)+'%')));
+  const shown=items.slice(0,6);
+  host.innerHTML='<div class="callout info" role="region" aria-label="Repayment review" style="display:block">'+
+    '<b>'+items.length+' possible repayment'+(items.length===1?'':'s')+'</b>'+
+    '<span class="sugsub" style="margin-left:8px">money out, money back \u00b7 marking saves a rule for the merchant</span>'+
+    shown.join('')+
+    (items.length>6?'<div class="sugsub" style="margin-top:6px">'+(items.length-6)+' more \u2014 look for tinted rows below</div>':'')+
+    '</div>';
   host.querySelectorAll('[data-sug-group]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-group'),'group',true)));
   host.querySelectorAll('[data-sug-third]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-third'),'thirdparty',true)));
   host.querySelectorAll('[data-sug-skip]').forEach(b=>b.addEventListener('click',()=>{ TXSUG.hidden[b.getAttribute('data-sug-skip')]=1; renderReimbBanner(); renderTxBody(); }));

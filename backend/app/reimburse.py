@@ -30,11 +30,18 @@ router = APIRouter(prefix="/api/reimbursements", tags=["reimbursements"],
 
 MIN_OUTFLOW_CENTS = 15_000     # only sizable charges are worth suggesting
 WINDOW_DAYS = 14               # repayment must land within two weeks
-MAX_LEGS = 3                   # combine at most this many inflows
+# Exact combos stop at pairs: three unrelated inflows coincidentally summing
+# to a charge is common enough to be noise, and a real 3-way group buy still
+# surfaces as a candidate via its P2P legs.
+MAX_LEGS = 2
 
 # Inflows that are never repayments.
 _NOT_REPAYMENT = ("payroll", "direct dep", "interest", "dividend", "refund",
                   "cash back", "daily cash", "tax ref")
+
+# The fuzzy candidate tier only trusts person-to-person inflows; anything
+# else glued onto a big charge reads as noise.
+_P2P = ("zelle", "venmo", "cash app", "cashapp", "paypal", "apple cash")
 
 
 # A large charge with partial paybacks is worth a human look even without an
@@ -93,22 +100,31 @@ def find_suggestions(session: Session, min_cents: int = MIN_OUTFLOW_CENTS,
                 legs = [i]
                 break
         if legs is None and len(pool) <= 24:
-            for k in (2, MAX_LEGS):
-                for combo in combinations(pool, k):
-                    if sum(c.amount_cents for c in combo) == target:
-                        legs = list(combo)
-                        break
-                if legs:
+            for combo in combinations(pool, MAX_LEGS):
+                if sum(c.amount_cents for c in combo) == target:
+                    legs = list(combo)
                     break
         if legs:
             used.update(l.txn_uid for l in legs)
             exact.append(charge(o, legs, 1.0))
             continue
-        # Partial coverage: the biggest inflows first, up to MAX_LEGS + 1.
-        pool.sort(key=lambda i: -i.amount_cents)
-        part = pool[:MAX_LEGS + 1]
-        covered = sum(i.amount_cents for i in part)
+        # Partial coverage: at most two P2P inflows (zelle/venmo style), each
+        # offered under one charge only, so the queue never shows the same
+        # payment glued onto several charges.
+        p2p = [i for i in pool
+               if any(k in (i.norm_merchant + " " + i.raw_description).lower()
+                      for k in _P2P)]
+        p2p.sort(key=lambda i: -i.amount_cents)
+        part: list[Transaction] = []
+        covered = 0
+        for i in p2p:  # greedy, never past the charge amount
+            if len(part) == 2:
+                break
+            if covered + i.amount_cents <= target:
+                part.append(i)
+                covered += i.amount_cents
         if part and covered >= target * CANDIDATE_MIN_COVERAGE:
+            used.update(l.txn_uid for l in part)
             candidates.append(charge(o, part, covered / target))
 
     candidates.sort(key=lambda c: -c["amount"])
