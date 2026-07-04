@@ -28,7 +28,7 @@ from sqlmodel import Session, func, or_, select
 from .auth import require_user
 from .db import get_session
 from .events import hub
-from .models import Account, LearnedCategory, Transaction
+from .models import ReimbursementRule, Account, LearnedCategory, Transaction
 
 # require_user is defense in depth; the global auth gate middleware also
 # covers every /api route when auth is enabled.
@@ -138,7 +138,8 @@ REIMBURSEMENT_KINDS = {"group", "thirdparty"}
 def apply_patch(session: Session, txn_uid: str, category: str | None,
                 user_locked: bool | None,
                 reimbursement: str | None = None,
-                clear_reimbursement: bool = False) -> dict | None:
+                clear_reimbursement: bool = False,
+                apply_to_merchant: bool = False) -> dict | None:
     """Apply an inline edit to one transaction. Returns None on unknown uid.
 
     Setting a category is a manual override: it locks the row (unless the
@@ -181,11 +182,48 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
 
     if clear_reimbursement:
         txn.reimbursement = None
+        if apply_to_merchant:
+            # Standing order revoked: forget the rule and unmark every
+            # sibling charge from this merchant.
+            rule = session.get(ReimbursementRule, txn.norm_merchant)
+            if rule is not None:
+                session.delete(rule)
+            siblings = session.exec(
+                select(Transaction)
+                .where(Transaction.norm_merchant == txn.norm_merchant)
+                .where(Transaction.txn_uid != txn.txn_uid)
+                .where(Transaction.reimbursement != None)  # noqa: E711
+            ).all()
+            for other in siblings:
+                other.reimbursement = None
+                session.add(other)
+            updated_others += len(siblings)
     elif reimbursement is not None:
         kind = reimbursement.strip().lower()
         if kind not in REIMBURSEMENT_KINDS:
             raise ValueError("reimbursement must be 'group' or 'thirdparty'")
         txn.reimbursement = kind
+        if apply_to_merchant:
+            # Default behavior: marking once creates a standing order, so
+            # next month's rent excludes itself.
+            rule = session.get(ReimbursementRule, txn.norm_merchant)
+            if rule is None:
+                session.add(ReimbursementRule(norm_merchant=txn.norm_merchant,
+                                              kind=kind))
+            else:
+                rule.kind = kind
+                session.add(rule)
+            siblings = session.exec(
+                select(Transaction)
+                .where(Transaction.norm_merchant == txn.norm_merchant)
+                .where(Transaction.txn_uid != txn.txn_uid)
+                .where(Transaction.amount_cents < 0)
+                .where(Transaction.reimbursement == None)  # noqa: E711
+            ).all()
+            for other in siblings:
+                other.reimbursement = kind
+                session.add(other)
+            updated_others += len(siblings)
 
     session.add(txn)
     session.commit()
@@ -199,6 +237,8 @@ class TxnPatch(BaseModel):
     # clear_reimbursement is set (a bare null must not clear by accident).
     reimbursement: str | None = None
     clear_reimbursement: bool = False
+    # True (the UI default) makes the mark a standing order for the merchant.
+    apply_to_merchant: bool = False
 
 
 @router.get("")
@@ -213,7 +253,8 @@ def api_patch(txn_uid: str, body: TxnPatch,
               session: Session = Depends(get_session)) -> dict:
     try:
         result = apply_patch(session, txn_uid, body.category, body.user_locked,
-                             body.reimbursement, body.clear_reimbursement)
+                             body.reimbursement, body.clear_reimbursement,
+                             body.apply_to_merchant)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     if result is None:

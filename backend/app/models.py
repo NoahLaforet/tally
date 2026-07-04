@@ -157,6 +157,16 @@ class LearnedCategory(SQLModel, table=True):
     category: str
 
 
+class ReimbursementRule(SQLModel, table=True):
+    """Merchant-level standing order: every charge from this merchant is
+    excluded from spend as 'group' or 'thirdparty'. Created when the user
+    marks a charge (the default), applied at every ingest path."""
+
+    norm_merchant: str = Field(primary_key=True)
+    kind: str  # group | thirdparty
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class User(SQLModel, table=True):
     """Local user record. Foundation for future passkey auth."""
 

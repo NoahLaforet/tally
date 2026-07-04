@@ -121,3 +121,39 @@ def api_suggestions(min_dollars: float = 150.0, window_days: int = WINDOW_DAYS) 
     window_days = max(1, min(60, window_days))
     with Session(engine) as s:
         return find_suggestions(s, min_cents=min_cents, window_days=window_days)
+
+
+@router.get("/rules")
+def api_rules() -> list[dict]:
+    from .models import ReimbursementRule
+
+    with Session(engine) as s:
+        return [{"merchant": r.norm_merchant, "kind": r.kind,
+                 "created_at": r.created_at.isoformat() if r.created_at else None}
+                for r in s.exec(select(ReimbursementRule)).all()]
+
+
+@router.delete("/rules/{merchant}")
+def api_delete_rule(merchant: str, unmark: bool = True) -> dict:
+    """Drop a standing order; by default also unmark that merchant's rows."""
+    from fastapi import HTTPException
+
+    from .models import ReimbursementRule
+
+    with Session(engine) as s:
+        rule = s.get(ReimbursementRule, merchant)
+        if rule is None:
+            raise HTTPException(404, "no rule for that merchant")
+        s.delete(rule)
+        cleared = 0
+        if unmark:
+            rows = s.exec(select(Transaction)
+                          .where(Transaction.norm_merchant == merchant)
+                          .where(Transaction.reimbursement != None)  # noqa: E711
+                          ).all()
+            for t in rows:
+                t.reimbursement = None
+                s.add(t)
+            cleared = len(rows)
+        s.commit()
+    return {"ok": True, "cleared": cleared}

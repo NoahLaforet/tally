@@ -288,7 +288,8 @@ def run_sync() -> dict:
     from plaid.model.transactions_sync_request import TransactionsSyncRequest
     from .ingest.pipeline import _match_transfers
     from .ingest.common import categorize
-    from .ingest.convergence import find_statement_match, learned_category
+    from .ingest.convergence import (find_statement_match, learned_category,
+                                     reimbursement_rule)
     from .canonical import make_plaid_uid, normalize_description
     from .models import Transaction
 
@@ -354,6 +355,8 @@ def run_sync() -> dict:
                     continue
                 norm = normalize_description(merch or desc)
                 learned = learned_category(s, norm)
+                standing = (reimbursement_rule(s, norm)
+                            if amount_cents < 0 else None)
                 s.add(Transaction(
                     txn_uid=uid, account_id=acct_id, posted_date=t.date,
                     amount_cents=amount_cents, raw_description=desc,
@@ -361,7 +364,8 @@ def run_sync() -> dict:
                     category=learned or categorize(desc, merch, ""),
                     category_source="learned" if learned else "plaid",
                     origin="plaid",
-                    plaid_txn_id=t.transaction_id))
+                    plaid_txn_id=t.transaction_id,
+                    reimbursement=standing))
                 added += 1
 
             for r in removed:

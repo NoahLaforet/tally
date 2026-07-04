@@ -68,6 +68,12 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     # Reimbursement marking (group fronts / third-party purchases).
     (7, ["ALTER TABLE \"transaction\" ADD COLUMN reimbursement VARCHAR",
          "CREATE INDEX IF NOT EXISTS ix_transaction_reimbursement ON \"transaction\" (reimbursement)"]),
+    # Merchant-level reimbursement rules (created by create_all on fresh
+    # DBs; this ALTER-less entry just bumps user_version for existing ones,
+    # since create_all also adds brand-new tables to old DBs).
+    (8, ["CREATE TABLE IF NOT EXISTS reimbursementrule ("
+         "norm_merchant VARCHAR NOT NULL PRIMARY KEY, "
+         "kind VARCHAR NOT NULL, created_at TIMESTAMP)"]),
 ]
 
 SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0

@@ -30,7 +30,8 @@ SELF_GUARDED = {
 }
 
 _PARAMS = {"{sub_id}": "1", "{cred_id}": "1", "{txn_uid}": "deadbeef",
-           "{income_id}": "1", "{account_id}": "1", "{key}": "nokey"}
+           "{income_id}": "1", "{account_id}": "1", "{key}": "nokey",
+           "{merchant}": "NOSUCHMERCHANT"}
 
 
 def _iter_apiroutes(routes, prefix=""):

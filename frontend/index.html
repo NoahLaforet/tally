@@ -867,26 +867,37 @@ function txBodyClick(e){
   const rbBtn=e.target.closest('[data-reimb]');
   if(rbBtn){ openReimbEditor(rbBtn); return; }
 }
-const REIMB_LABELS={'':'Counts as my spending',group:'Group front, paid back',thirdparty:'Someone else\u2019s, paid back'};
+const REIMB_OPTS=[
+  ['','Counts as my spending'],
+  ['group|1','Group front \u00b7 always this merchant'],
+  ['thirdparty|1','Someone else\u2019s \u00b7 always this merchant'],
+  ['group|0','Group front \u00b7 this charge only'],
+  ['thirdparty|0','Someone else\u2019s \u00b7 this charge only'],
+];
 function openReimbEditor(btn){
   const uid=btn.getAttribute('data-reimb');
   const row=TX.rows.find(r=>r.uid===uid); if(!row) return;
+  const cur=row.reimbursement?(row.reimbursement+'|1'):'';
   const sel=document.createElement('select');
   sel.setAttribute('aria-label','Repayment status');
-  sel.innerHTML=Object.keys(REIMB_LABELS).map(k=>'<option value="'+k+'"'+((row.reimbursement||'')===k?' selected':'')+'>'+esc(REIMB_LABELS[k])+'</option>').join('');
+  sel.innerHTML=REIMB_OPTS.map(o=>'<option value="'+o[0]+'"'+(o[0]===cur?' selected':'')+'>'+esc(o[1])+'</option>').join('');
   btn.replaceWith(sel);
   sel.focus();
   let done=false;
-  sel.addEventListener('change',()=>{ if(done) return; done=true; setReimb(uid,sel.value||null); });
+  sel.addEventListener('change',()=>{ if(done) return; done=true;
+    const v=sel.value; if(!v){ setReimb(uid,null,true); return; }
+    const parts=v.split('|'); setReimb(uid,parts[0],parts[1]==='1'); });
   sel.addEventListener('blur',()=>{ if(!done){ done=true; renderTxBody(); } });
 }
-async function setReimb(uid,kind){
-  const body=kind?{reimbursement:kind}:{clear_reimbursement:true};
+async function setReimb(uid,kind,always){
+  const body=kind?{reimbursement:kind,apply_to_merchant:!!always}:{clear_reimbursement:true,apply_to_merchant:true};
   try{
-    await fetchJSON('/api/transactions/'+encodeURIComponent(uid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    toast(kind?'Excluded from your spending':'Counted as your spending again');
+    const j=await fetchJSON('/api/transactions/'+encodeURIComponent(uid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const n=num(j.updated_others);
+    toast(kind?('Excluded from your spending'+(always?(n>0?' \u00b7 rule saved, '+n+' more charge'+(n===1?'':'s')+' covered':' \u00b7 rule saved for this merchant'):'')):'Counted as your spending again');
     TXSUG.stale=true;
     await Promise.all([loadTx(),reloadCore()]);
+    if(typeof loadReimbRules==='function') loadReimbRules.stale=true;
   }catch(e){ toast('Could not update: '+e.message); loadTx(); }
 }
 /* Repayment suggestions: charges followed by inflows adding back to the
@@ -933,8 +944,8 @@ function renderReimbBanner(){
   }
   host.innerHTML='<div class="callout info" role="region" aria-label="Repayment review">'+
     '<div style="flex:1">'+inner+'</div></div>';
-  host.querySelectorAll('[data-sug-group]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-group'),'group')));
-  host.querySelectorAll('[data-sug-third]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-third'),'thirdparty')));
+  host.querySelectorAll('[data-sug-group]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-group'),'group',true)));
+  host.querySelectorAll('[data-sug-third]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-third'),'thirdparty',true)));
   host.querySelectorAll('[data-sug-skip]').forEach(b=>b.addEventListener('click',()=>{ TXSUG.hidden[b.getAttribute('data-sug-skip')]=1; renderReimbBanner(); renderTxBody(); }));
 }
 function openCatEditor(btn){
@@ -1297,11 +1308,32 @@ async function refreshAccountsNw(){
 }
 
 /* ============================== settings ============================== */
+async function loadReimbRules(){
+  const panel=el('setReimbPanel'), host=el('setReimb');
+  if(!panel||!host) return;
+  let rules=[];
+  try{ rules=await fetchJSON('/api/reimbursements/rules'); }catch(e){ return; }
+  if(!rules.length){ panel.hidden=true; return; }
+  panel.hidden=false;
+  const kindLabel={group:'group front',thirdparty:'someone else\u2019s'};
+  host.innerHTML=rules.map(r=>'<div class="row-actions" style="margin-top:7px;align-items:center">'+
+    '<span style="flex:1"><b>'+esc(r.merchant)+'</b> \u00b7 '+esc(kindLabel[r.kind]||r.kind)+'</span>'+
+    '<button class="minibtn" data-rule-del="'+esc(r.merchant)+'">Delete rule</button></div>').join('');
+  host.querySelectorAll('[data-rule-del]').forEach(b=>b.addEventListener('click',async ()=>{
+    const m=b.getAttribute('data-rule-del');
+    try{
+      const j=await fetchJSON('/api/reimbursements/rules/'+encodeURIComponent(m),{method:'DELETE'});
+      toast('Rule removed \u00b7 '+num(j.cleared)+' charge'+(num(j.cleared)===1?'':'s')+' count again');
+      TXSUG.stale=true; loadReimbRules(); reloadCore(); if(ACTIVE==='transactions') loadTx();
+    }catch(e){ toast('Could not remove rule: '+e.message); }
+  }));
+}
 function renderSettings(){
   const v=el('v-settings');
   v.innerHTML=
     '<div class="panel"><h2>Cards &amp; reward rules</h2><p class="desc">Percent back per category; the rewards router and best-card hints all read from this matrix.</p><div id="setCards"></div></div>'+
     '<div class="panel"><h2>Bank sync</h2><p class="desc">Plaid connection status and manual sync.</p><div id="setPlaid">'+skelBlock(72)+'</div></div>'+
+    '<div class="panel" id="setReimbPanel" hidden><h2>Repayment rules</h2><p class="desc">Merchants whose charges are always excluded from your spending (rent someone repays, purchases made for others). Delete a rule to count that merchant again.</p><div id="setReimb"></div></div>'+
     '<div class="panel" id="setKeysPanel" hidden><h2>Passkeys</h2><p class="desc">Devices that can sign in to this instance.</p><div id="setKeys"></div></div>'+
     '<div class="panel"><h2>Data</h2><p class="desc">Exports and optional helpers.</p>'+
       '<div class="row-actions">'+
@@ -1312,6 +1344,7 @@ function renderSettings(){
   renderCardsEditor();
   loadPlaid();
   loadPasskeys();
+  loadReimbRules();
   const lb=el('llmBtn');
   lb.addEventListener('click',async ()=>{
     lb.disabled=true; lb.innerHTML='<span class="spin"></span> Working…';

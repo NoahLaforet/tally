@@ -36,7 +36,7 @@ from .db import engine, init_db
 from .models import (Account, Budget, Card, IncomeSource, IngestedFile,
                      Subscription, Transaction)
 from .ingest.common import period_from_records
-from .ingest.convergence import learned_category
+from .ingest.convergence import learned_category, reimbursement_rule
 from .ingest.pipeline import (ingest_file, sha256_file, ReconcileError,
                               _assign_seq, _ensure_account, _match_transfers)
 from .ocr_apple import OCRUnavailable, ocr_image, parse_apple_card
@@ -478,6 +478,8 @@ def api_ingest_confirm(body: ConfirmBody, _user=Depends(require_user)) -> JSONRe
             if session.get(Transaction, uid) is not None:
                 continue
             learned = learned_category(session, r.norm_merchant)
+            standing = (reimbursement_rule(session, r.norm_merchant)
+                        if r.amount_cents < 0 else None)
             session.add(Transaction(
                 txn_uid=uid,
                 account_id=account_id,
@@ -487,6 +489,7 @@ def api_ingest_confirm(body: ConfirmBody, _user=Depends(require_user)) -> JSONRe
                 norm_merchant=r.norm_merchant,
                 category=learned or r.category,
                 category_source="learned" if learned else r.category_source,
+                reimbursement=standing,
                 is_transfer=r.is_transfer,
                 transfer_group_id=r.transfer_group_id,
                 source_file_hash=pending["hash"],

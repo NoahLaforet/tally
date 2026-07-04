@@ -33,7 +33,7 @@ from ..models import Account, IngestedFile, Transaction
 from . import apple_csv, ofx, wf_pdf
 from .common import (ParseResult, looks_like_self_transfer,
                      looks_like_transfer, pdftext)
-from .convergence import find_plaid_shadow, learned_category
+from .convergence import find_plaid_shadow, learned_category, reimbursement_rule
 
 # account key -> (display name, kind, institution, rewards card_key)
 ACCOUNT_SPECS = {
@@ -229,6 +229,8 @@ def ingest_file(path: str, session: Session | None = None) -> dict:
             if learned is not None:
                 r.category = learned
                 r.category_source = "learned"
+            standing = (reimbursement_rule(session, r.norm_merchant)
+                        if r.amount_cents < 0 else None)
             # Statements are ground truth: a Plaid-inserted row covering the
             # same charge is replaced, and the statement row inherits the
             # Plaid link, transfer grouping, and any hand-set category.
@@ -247,6 +249,7 @@ def ingest_file(path: str, session: Session | None = None) -> dict:
                 source_statement_id=r.source_statement_id,
                 source_line=r.source_line,
                 origin="statement",
+                reimbursement=standing,
             )
             shadow = find_plaid_shadow(session, account_id, r.posted_date,
                                        r.amount_cents, claimed)

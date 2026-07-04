@@ -73,3 +73,15 @@ def learned_category(session: Session, norm_merchant: str) -> str | None:
 
     row = session.get(LearnedCategory, norm_merchant)
     return row.category if row else None
+
+
+def reimbursement_rule(session: Session, norm_merchant: str) -> str | None:
+    """The standing reimbursement kind for a merchant, if a rule exists.
+
+    Same contract as learned_category: consulted by every ingest path so
+    marking rent once keeps excluding it forever.
+    """
+    from ..models import ReimbursementRule
+
+    row = session.get(ReimbursementRule, norm_merchant)
+    return row.kind if row else None
