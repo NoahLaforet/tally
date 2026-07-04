@@ -42,7 +42,7 @@ MAX_PAGE_SIZE = 200
 COLUMNS = [
     "uid", "date", "amount", "amount_cents", "merchant", "description",
     "category", "category_source", "account_id", "account",
-    "is_transfer", "origin", "user_locked", "reimbursement",
+    "is_transfer", "origin", "user_locked", "reimbursement", "note",
 ]
 
 
@@ -66,6 +66,7 @@ def _conditions(f: dict) -> list:
         conds.append(or_(
             func.lower(Transaction.norm_merchant).like(needle, escape="\\"),
             func.lower(Transaction.raw_description).like(needle, escape="\\"),
+            func.lower(Transaction.note).like(needle, escape="\\"),
         ))
     if f.get("account_id") is not None:
         conds.append(Transaction.account_id == f["account_id"])
@@ -96,6 +97,7 @@ def _row(t: Transaction, account_names: dict[int, str]) -> dict:
         "origin": t.origin,
         "user_locked": t.user_locked,
         "reimbursement": t.reimbursement,
+        "note": t.note,
     }
 
 
@@ -141,7 +143,8 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
                 user_locked: bool | None,
                 reimbursement: str | None = None,
                 clear_reimbursement: bool = False,
-                apply_to_merchant: bool = False) -> dict | None:
+                apply_to_merchant: bool = False,
+                note: str | None = None) -> dict | None:
     """Apply an inline edit to one transaction. Returns None on unknown uid.
 
     Setting a category is a manual override: it locks the row (unless the
@@ -227,6 +230,11 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
                 session.add(other)
             updated_others += len(siblings)
 
+    if note is not None:
+        # A note edit is just a tag. It never locks, never teaches the
+        # learned table, never fans out. Empty string clears to NULL.
+        txn.note = note.strip() or None
+
     session.add(txn)
     session.commit()
     return {"ok": True, "updated_others": updated_others}
@@ -241,6 +249,8 @@ class TxnPatch(BaseModel):
     clear_reimbursement: bool = False
     # True (the UI default) makes the mark a standing order for the merchant.
     apply_to_merchant: bool = False
+    # Free-text tag. None = unchanged; empty string = clear (stored as NULL).
+    note: str | None = None
 
 
 @router.get("")
@@ -256,7 +266,7 @@ def api_patch(txn_uid: str, body: TxnPatch,
     try:
         result = apply_patch(session, txn_uid, body.category, body.user_locked,
                              body.reimbursement, body.clear_reimbursement,
-                             body.apply_to_merchant)
+                             body.apply_to_merchant, body.note)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     if result is None:

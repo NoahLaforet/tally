@@ -395,7 +395,7 @@ const pctf=(bps)=> (num(bps)/100).toLocaleString('en-US',{maximumFractionDigits:
 
 /* ============================== state ============================== */
 let D=null, SUBS=[], ACCOUNTS=[], BUDGETS=[], INCOME=[], CARDS=[], SPLAN=null;
-let NW=null, PLAID=null, KEYS=null, AUTHME=null;
+let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[];
 const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:''};
 let ACTIVE='overview';
 
@@ -403,13 +403,20 @@ const CATCOLOR={transfer:'#64748b',dining:'#fb7185',grocery:'#34d399',gas:'#fbbf
   shopping:'#818cf8',entertainment:'#22d3ee',subscriptions:'#c084fc',fitness:'#f472b6',transit:'#60a5fa',
   drugstore:'#94a3b8',streaming:'#c084fc',phone:'#38bdf8',travel:'#fb923c',other:'#71717a'};
 const CARDCOLORS=['#b9bcc2','#3b82f6','#d4a017','#f0506e','#34d399','#a78bfa','#fb923c'];
-function catColor(id){ return CATCOLOR[id]||'#7b8cff'; }
+function catColor(id){
+  // Server colors only ever land in inline styles as a validated hex value.
+  const k=CATS.find(x=>x.id===id);
+  if(k&&k.color&&/^#[0-9a-fA-F]{3,8}$/.test(String(k.color))) return k.color;
+  return CATCOLOR[id]||'#7b8cff';
+}
 function catLabel(id){
+  const k=CATS.find(x=>x.id===id); if(k&&k.label) return k.label;
   if(id==='transfer') return 'Account transfers';
   const c=(D&&D.categories||[]).find(x=>x.id===id); if(c) return c.label;
   return String(id||'').replace(/_/g,' ').replace(/\b\w/g,ch=>ch.toUpperCase());
 }
 function allCats(){
+  if(CATS.length) return CATS.filter(c=>!c.hidden).map(c=>c.id).sort((a,b)=>catLabel(a).localeCompare(catLabel(b)));
   const set=new Set();
   BUDGETS.forEach(b=>set.add(b.category));
   (D&&D.categories||[]).forEach(c=>set.add(c.id));
@@ -540,13 +547,15 @@ function showLoadError(msg){
   const b=el('retryBoot'); if(b) b.addEventListener('click',boot);
 }
 async function loadCore(){
-  const [ov,subs,accts,budgets,income,cards,splan]=await Promise.all([
+  const [ov,subs,accts,budgets,income,cards,splan,cats]=await Promise.all([
     fetchJSON('/api/overview'), fetchJSON('/api/subscriptions'), fetchJSON('/api/accounts'),
     fetchJSON('/api/budgets'), fetchJSON('/api/income'), fetchJSON('/api/cards'), fetchJSON('/api/savings-plan'),
+    fetchJSON('/api/categories').catch(()=>null), // optional: older backends lack it; fallbacks cover us
   ]);
   D=ov; SUBS=Array.isArray(subs)?subs:[]; ACCOUNTS=Array.isArray(accts)?accts:[];
   BUDGETS=Array.isArray(budgets)?budgets:[]; INCOME=Array.isArray(income)?income:[];
   CARDS=Array.isArray(cards)?cards:[]; SPLAN=splan||{monthly:0,goal:0,note:''};
+  if(Array.isArray(cats)) CATS=cats;
 }
 let booted=false;
 async function boot(){
@@ -746,9 +755,9 @@ function renderTransactions(){
     txInit=true;
     v.innerHTML=
       '<div class="panel">'+
-        '<h2>Transactions</h2><p class="desc">Search, filter, and recategorize. Category edits teach Tally the merchant; locked rows never get relabeled.</p>'+
+        '<h2>Transactions</h2><p class="desc">Search, filter, and recategorize. Category edits teach Tally the merchant; locked rows never get relabeled. Tag anything with a note (✎) and the categorizer will use your words.</p>'+
         '<div class="toolbar">'+
-          '<input type="search" id="txQ" placeholder="Search merchant or description" aria-label="Search transactions">'+
+          '<input type="search" id="txQ" placeholder="Search merchant, description, or note" aria-label="Search transactions">'+
           '<select id="txCat" aria-label="Filter by category"><option value="">All categories</option></select>'+
           '<select id="txAcct" aria-label="Filter by account"><option value="">All accounts</option></select>'+
           '<select id="txOrigin" aria-label="Filter by source"><option value="">All sources</option>'+
@@ -840,9 +849,11 @@ function renderTxBody(){
     TX.rows.map(t=>{
       const credit=num(t.amount)>0;
       const amt=credit?('<span class="pos">+'+fmt2(t.amount)+'</span>'):fmt2(-t.amount);
+      const noteFull=String(t.note||'');
       return '<tr data-uid="'+esc(t.uid)+'"'+sugClass(t.uid)+'>'+
         '<td class="num" style="text-align:left;color:var(--text-dim)">'+esc(t.date)+'</td>'+
-        '<td title="'+esc(t.description||'')+'"><b style="font-weight:550">'+esc(t.merchant||'')+'</b>'+txBadges(t)+'</td>'+
+        '<td title="'+esc(t.description||'')+'"><b style="font-weight:550">'+esc(t.merchant||'')+'</b>'+txBadges(t)+
+          (noteFull?('<span style="display:block;font-size:11.5px;color:var(--text-faint)" title="'+esc(noteFull)+'">'+esc(shortName(noteFull,60))+'</span>'):'')+'</td>'+
         '<td class="num">'+amt+'</td>'+
         '<td><button class="chipbtn" data-editcat="'+esc(t.uid)+'" aria-label="Change category for '+esc(t.merchant||'transaction')+'">'+
           '<span class="dot" style="background:'+catColor(t.category)+'"></span>'+esc(catLabel(t.category))+'</button></td>'+
@@ -853,7 +864,11 @@ function renderTxBody(){
           (credit?'':'<button class="lockbtn" data-reimb="'+esc(t.uid)+'" '+
           'aria-label="Mark repayment status for '+esc(t.merchant||'transaction')+'" '+
           'title="'+(t.reimbursement?'Marked as paid back; click to change':'Mark as paid back (group front / someone else\u2019s)')+'"'+
-          (t.reimbursement?' style="color:var(--good)"':'')+'>\u21A9</button>')+'</td>'+
+          (t.reimbursement?' style="color:var(--good)"':'')+'>\u21A9</button>')+
+          '<button class="lockbtn" data-note="'+esc(t.uid)+'" '+
+          'aria-label="Edit note for '+esc(t.merchant||'transaction')+'" '+
+          'title="'+(noteFull?'Edit note':'Add a note; the categorizer reads it')+'"'+
+          (noteFull?' style="color:var(--accent)"':'')+'>\u270E</button></td>'+
       '</tr>';
     }).join('')+
     '</tbody></table></div>'+
@@ -872,6 +887,8 @@ function txBodyClick(e){
   if(lockBtn){ toggleLock(lockBtn.getAttribute('data-lock')); return; }
   const rbBtn=e.target.closest('[data-reimb]');
   if(rbBtn){ openReimbEditor(rbBtn); return; }
+  const noteBtn=e.target.closest('[data-note]');
+  if(noteBtn){ openNoteEditor(noteBtn); return; }
 }
 const REIMB_OPTS=[
   ['','Counts as my spending'],
@@ -974,7 +991,11 @@ function openCatEditor(btn){
   const row=TX.rows.find(r=>r.uid===uid); if(!row) return;
   const sel=document.createElement('select');
   sel.setAttribute('aria-label','New category');
-  sel.innerHTML=allCats().map(c=>'<option value="'+esc(c)+'"'+(c===row.category?' selected':'')+'>'+esc(catLabel(c))+'</option>').join('');
+  // No transfer and no hidden categories as targets; the row's current
+  // category stays listed so the editor opens showing reality.
+  const cats=allCats().filter(c=>c!=='transfer');
+  if(row.category&&!cats.includes(row.category)) cats.unshift(row.category);
+  sel.innerHTML=cats.map(c=>'<option value="'+esc(c)+'"'+(c===row.category?' selected':'')+'>'+esc(catLabel(c))+'</option>').join('');
   btn.replaceWith(sel);
   sel.focus();
   let done=false;
@@ -989,6 +1010,35 @@ function openCatEditor(btn){
     }catch(err){ toast('Could not save category: '+err.message); loadTx(); }
   });
   sel.addEventListener('blur',()=>{ if(!done){ done=true; renderTxBody(); } });
+}
+function openNoteEditor(btn){
+  const uid=btn.getAttribute('data-note');
+  const row=TX.rows.find(r=>r.uid===uid); if(!row) return;
+  const inp=document.createElement('input');
+  inp.type='text';
+  inp.value=row.note||'';
+  inp.placeholder='Note';
+  inp.setAttribute('aria-label','Note for '+(row.merchant||'transaction'));
+  inp.style.width='220px';
+  btn.replaceWith(inp);
+  inp.focus();
+  let done=false;
+  async function save(){
+    if(done) return; done=true;
+    const val=inp.value.trim();
+    if(val===String(row.note||'')){ renderTxBody(); return; } // nothing changed; no write
+    try{
+      await fetchJSON('/api/transactions/'+encodeURIComponent(uid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:val})});
+      row.note=val||null;
+      toast(val?'Note saved':'Note cleared');
+    }catch(e){ toast('Could not save note: '+e.message); }
+    renderTxBody();
+  }
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){ e.preventDefault(); save(); }
+    else if(e.key==='Escape'){ e.preventDefault(); if(!done){ done=true; renderTxBody(); } }
+  });
+  inp.addEventListener('blur',()=>{ save(); });
 }
 async function toggleLock(uid){
   const row=TX.rows.find(r=>r.uid===uid); if(!row) return;
@@ -1353,6 +1403,7 @@ function renderSettings(){
   const v=el('v-settings');
   v.innerHTML=
     '<div class="panel"><h2>Cards &amp; reward rules</h2><p class="desc">Percent back per category; the rewards router and best-card hints all read from this matrix.</p><div id="setCards"></div></div>'+
+    '<div class="panel"><h2>Categories</h2><p class="desc">Your own taxonomy. Tag transactions with notes and let the categorizer sort them, or manage categories directly.</p><div id="setCats"></div></div>'+
     '<div class="panel"><h2>Bank sync</h2><p class="desc">Plaid connection status and manual sync.</p><div id="setPlaid">'+skelBlock(72)+'</div></div>'+
     '<div class="panel" id="setReimbPanel" hidden><h2>Repayment rules</h2><p class="desc">Merchants whose charges are always excluded from your spending (rent someone repays, purchases made for others). Delete a rule to count that merchant again.</p><div id="setReimb"></div></div>'+
     '<div class="panel" id="setKeysPanel" hidden><h2>Passkeys</h2><p class="desc">Devices that can sign in to this instance.</p><div id="setKeys"></div></div>'+
@@ -1363,6 +1414,7 @@ function renderSettings(){
         '<button class="minibtn" id="llmBtn">Categorize unknowns with LLM</button>'+
       '</div><div class="note" id="llmNote"></div></div>';
   renderCardsEditor();
+  renderCategoriesPanel();
   loadPlaid();
   loadPasskeys();
   loadReimbRules();
@@ -1373,8 +1425,15 @@ function renderSettings(){
       const j=await fetchJSON('/api/categorize/llm',{method:'POST'});
       if(j.enabled===false){ lb.hidden=true; el('llmNote').textContent='The LLM categorizer is not configured on this instance.'; }
       else{
-        toast('Categorized '+num(j.categorized)+' transactions'+(j.error?(' · stopped early: '+j.error):''));
+        const nc=Array.isArray(j.new_categories)?j.new_categories:[];
+        const rh=Array.isArray(j.review_hints)?j.review_hints:[];
+        let msg='Categorized '+num(j.categorized)+' transactions';
+        if(nc.length) msg+=' · created: '+nc.join(', ');
+        if(rh.length) msg+=' · '+rh.length+(rh.length===1?' looks like a repayment':' look like repayments')+', check the Transactions tab';
+        if(j.error) msg+=' · stopped early: '+j.error;
+        toast(msg);
         lb.disabled=false; lb.textContent='Categorize unknowns with LLM';
+        await refreshCats();
         reloadCore();
       }
     }catch(e){ toast('Categorizer failed: '+e.message); lb.disabled=false; lb.textContent='Categorize unknowns with LLM'; }
@@ -1446,6 +1505,76 @@ function bindCardAdd(host){
       const j=await fetchJSON('/api/cards',jbody({key:key,name:name,rules:{}}));
       CARDS.push(j); renderCardsEditor(); toast('Card added; set its reward rules');
     }catch(e){ toast('Could not add card: '+e.message); }
+  });
+}
+
+/* ---- categories ---- */
+async function refreshCats(){
+  try{ const cs=await fetchJSON('/api/categories'); if(Array.isArray(cs)) CATS=cs; }
+  catch(e){ /* endpoint missing or down; keep the last known list */ }
+  if(ACTIVE==='settings'){ renderCategoriesPanel(); renderCardsEditor(); }
+  else if(RENDERERS[ACTIVE]) RENDERERS[ACTIVE]();
+}
+function renderCategoriesPanel(){
+  const host=el('setCats'); if(!host) return;
+  const list=CATS.slice().sort((a,b)=>String(a.label||a.id).localeCompare(String(b.label||b.id)));
+  host.innerHTML=
+    (list.length?list.map(c=>
+      '<div class="row-actions" style="margin-top:7px;align-items:center'+(c.hidden?';opacity:.55':'')+'">'+
+        '<span class="dot" style="background:'+catColor(c.id)+'"></span>'+
+        '<input data-catlabel="'+esc(c.id)+'" value="'+esc(c.label||c.id)+'" style="max-width:200px" aria-label="Label for category '+esc(c.label||c.id)+'">'+
+        '<span class="note" style="margin:0">'+num(c.txn_count)+' txn'+(num(c.txn_count)===1?'':'s')+(c.builtin?' · builtin':'')+'</span>'+
+        '<span style="flex:1"></span>'+
+        '<button class="minibtn" data-cathide="'+esc(c.id)+'">'+(c.hidden?'Show':'Hide')+'</button>'+
+        (c.builtin?'':'<button class="minibtn del" data-catdel="'+esc(c.id)+'">Delete</button>')+
+      '</div>').join('')
+    :'<div class="note" style="margin:0">No category list from the server yet. Categories still work from your data; managing them needs the backend endpoint.</div>')+
+    '<div class="row-actions" style="margin-top:14px">'+
+      '<input id="catAddLabel" placeholder="New category" style="max-width:200px" aria-label="New category label">'+
+      '<input type="color" id="catAddColor" value="#4d7cff" style="width:46px;height:38px;padding:4px" aria-label="New category color">'+
+      '<button class="minibtn acc" id="catAdd">+ Add category</button>'+
+    '</div>';
+  host.querySelectorAll('[data-catlabel]').forEach(inp=>inp.addEventListener('change',async e=>{
+    const id=e.target.getAttribute('data-catlabel');
+    const label=e.target.value.trim();
+    if(!label){ toast('A label is needed.'); renderCategoriesPanel(); return; }
+    try{
+      await fetchJSON('/api/categories/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:label})});
+      toast('Category renamed'); refreshCats();
+    }catch(err){ toast('Could not rename: '+err.message); }
+  }));
+  host.querySelectorAll('[data-cathide]').forEach(b=>b.addEventListener('click',async ()=>{
+    const id=b.getAttribute('data-cathide');
+    const c=CATS.find(x=>x.id===id); if(!c) return;
+    try{
+      await fetchJSON('/api/categories/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({hidden:!c.hidden})});
+      toast(c.hidden?'Category shown again':'Category hidden from pickers'); refreshCats();
+    }catch(err){ toast('Could not update: '+err.message); }
+  }));
+  host.querySelectorAll('[data-catdel]').forEach(b=>b.addEventListener('click',async ()=>{
+    // Two-click confirm: first click arms for 3 seconds, second deletes.
+    if(b.dataset.armed!=='1'){
+      b.dataset.armed='1'; b.textContent='Sure?';
+      setTimeout(()=>{ if(b.isConnected){ b.dataset.armed=''; b.textContent='Delete'; } },3000);
+      return;
+    }
+    const id=b.getAttribute('data-catdel');
+    try{
+      const j=await fetchJSON('/api/categories/'+encodeURIComponent(id)+'?reassign_to=other',{method:'DELETE'});
+      const n=num(j&&j.reassigned);
+      toast('Category deleted'+(n>0?(' · '+n+' row'+(n===1?'':'s')+' moved to Other'):''));
+      refreshCats();
+    }catch(err){ toast('Could not delete: '+err.message); }
+  }));
+  const add=host.querySelector('#catAdd');
+  if(add) add.addEventListener('click',async ()=>{
+    const label=host.querySelector('#catAddLabel').value.trim();
+    const color=host.querySelector('#catAddColor').value;
+    if(!label){ toast('Give the category a label first.'); host.querySelector('#catAddLabel').focus(); return; }
+    try{
+      await fetchJSON('/api/categories',jbody({label:label,color:color}));
+      toast('Category added'); refreshCats();
+    }catch(err){ toast('Could not add category: '+err.message); }
   });
 }
 

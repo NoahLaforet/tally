@@ -14,9 +14,10 @@ import pytest
 import sqlalchemy
 from sqlmodel import Session, SQLModel, create_engine
 
+from app.api_categories import seed_categories
 from app.categorize_llm import run_llm_categorizer
 from app.config import settings
-from app.models import Transaction
+from app.models import Category, Transaction
 
 
 @pytest.fixture
@@ -28,6 +29,9 @@ def mem_session():
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
+        # The categorizer reads its vocabulary from the category table,
+        # exactly like a real database seeded by init_db.
+        seed_categories(s)
         yield s
 
 
@@ -37,12 +41,12 @@ def llm_on(monkeypatch):
     monkeypatch.setattr(settings, "CLAUDE_API_KEY", "test-key")
 
 
-def _txn(uid, merchant, category="other", locked=False):
+def _txn(uid, merchant, category="other", locked=False, note=None):
     return Transaction(
         txn_uid=uid, account_id=1, posted_date=date(2026, 6, 1),
         amount_cents=-1234, raw_description=merchant.upper(),
         norm_merchant=merchant, category=category,
-        category_source="rule", user_locked=locked,
+        category_source="rule", user_locked=locked, note=note,
     )
 
 
@@ -141,6 +145,109 @@ def test_error_returns_dict(mem_session, llm_on, monkeypatch):
     assert out["enabled"] is True
     assert out["categorized"] == 0
     assert "network down" in out["error"]
+
+
+def test_noted_new_categories_and_hints(mem_session, llm_on, monkeypatch):
+    # Notes are an explicit signal: sent regardless of current category.
+    mem_session.add(_txn("n1", "bestbuy", category="shopping",
+                         note="liam laptop"))
+    mem_session.add(_txn("n2", "epic pass", category="grocery",
+                         note="ski trip with friends"))
+    mem_session.add(_txn("n3", "steam", category="shopping", locked=True,
+                         note="gift for dean"))
+    mem_session.commit()
+
+    response = {
+        "noted": [
+            {"uid": "n1", "category": "shopping", "reimbursement_hint": True},
+            {"uid": "n2", "category": "ski_trip", "reimbursement_hint": False},
+            # Locked row: never sent, and skipped even if answered for.
+            {"uid": "n3", "category": "dining", "reimbursement_hint": False},
+        ],
+        "new_categories": [
+            {"id": "ski_trip", "label": "Ski Trip"},
+            # Proposed but never assigned to, so it must not be created.
+            {"id": "unused_cat", "label": "Never Referenced"},
+        ],
+    }
+    monkeypatch.setattr(httpx.Client, "post",
+                        lambda self, url, **kw: FakeResponse(response))
+
+    out = run_llm_categorizer(mem_session)
+    assert out["enabled"] is True
+    assert out["categorized"] == 1
+    assert out["new_categories"] == ["ski_trip"]
+    assert out["review_hints"] == ["n1"]
+
+    # The referenced proposal became a real custom category.
+    cat = mem_session.get(Category, "ski_trip")
+    assert cat is not None
+    assert cat.label == "Ski Trip"
+    assert cat.builtin is False
+    assert mem_session.get(Category, "unused_cat") is None
+
+    n2 = mem_session.get(Transaction, "n2")
+    assert n2.category == "ski_trip"
+    assert n2.category_source == "llm"
+    # Hinted row: reimbursement untouched, category confirmed as-is.
+    n1 = mem_session.get(Transaction, "n1")
+    assert n1.reimbursement is None
+    assert n1.category == "shopping"
+    assert n1.category_source == "rule"
+    # Locked row untouched.
+    n3 = mem_session.get(Transaction, "n3")
+    assert n3.category == "shopping"
+    assert n3.user_locked is True
+
+
+def test_merchants_and_noted_in_one_run(mem_session, llm_on, monkeypatch):
+    mem_session.add(_txn("r1", "chipotle"))
+    mem_session.add(_txn("r2", "rei", category="shopping",
+                         note="camping trip"))
+    mem_session.commit()
+
+    prompts = []
+
+    def fake_post(self, url, **kw):
+        prompt = kw["json"]["messages"][0]["content"]
+        prompts.append(prompt)
+        if "Merchants:\n" in prompt:
+            # Old bare shape still parses as the merchants map.
+            return FakeResponse({"chipotle": "dining"})
+        return FakeResponse({"noted": [{"uid": "r2", "category": "fitness",
+                                        "reimbursement_hint": False}]})
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    out = run_llm_categorizer(mem_session)
+    assert len(prompts) == 2
+    assert out["categorized"] == 2
+    assert out["review_hints"] == []
+    assert mem_session.get(Transaction, "r1").category == "dining"
+    assert mem_session.get(Transaction, "r2").category == "fitness"
+    # The live vocabulary rides along in every prompt.
+    assert "dining: Dining & Delivery" in prompts[0]
+    # The noted prompt carries the note text and the dollar amount.
+    assert "camping trip" in prompts[1]
+    assert "-12.34" in prompts[1]
+
+
+def test_hidden_categories_left_out_of_prompt(mem_session, llm_on,
+                                              monkeypatch):
+    cat = mem_session.get(Category, "streaming")
+    cat.hidden = True
+    mem_session.add(cat)
+    mem_session.add(_txn("h1", "somewhere"))
+    mem_session.commit()
+
+    prompts = []
+
+    def fake_post(self, url, **kw):
+        prompts.append(kw["json"]["messages"][0]["content"])
+        return FakeResponse({})
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    run_llm_categorizer(mem_session)
+    assert "streaming" not in prompts[0]
 
 
 def test_endpoint_gate(client):

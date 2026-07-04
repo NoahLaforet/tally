@@ -74,6 +74,31 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (8, ["CREATE TABLE IF NOT EXISTS reimbursementrule ("
          "norm_merchant VARCHAR NOT NULL PRIMARY KEY, "
          "kind VARCHAR NOT NULL, created_at TIMESTAMP)"]),
+    # Free-text transaction notes plus the category table. Labels are
+    # hardcoded here on purpose; migrations must never import app code.
+    # Fresh databases get the same builtin rows from seed_categories.
+    (9, ["ALTER TABLE \"transaction\" ADD COLUMN note VARCHAR",
+         "CREATE TABLE IF NOT EXISTS category ("
+         "id VARCHAR NOT NULL PRIMARY KEY, "
+         "label VARCHAR NOT NULL, "
+         "color VARCHAR NOT NULL DEFAULT '', "
+         "hidden BOOLEAN NOT NULL DEFAULT 0, "
+         "builtin BOOLEAN NOT NULL DEFAULT 0)",
+         "INSERT OR IGNORE INTO category (id, label, color, hidden, builtin) VALUES "
+         "('dining', 'Dining & Delivery', '', 0, 1), "
+         "('grocery', 'Groceries', '', 0, 1), "
+         "('gas', 'Gas & EV Charging', '', 0, 1), "
+         "('apple_hardware', 'Apple Hardware (one-time)', '', 0, 1), "
+         "('apple_services', 'Apple Services', '', 0, 1), "
+         "('shopping', 'Shopping', '', 0, 1), "
+         "('entertainment', 'Entertainment', '', 0, 1), "
+         "('subscriptions', 'Subscriptions', '', 0, 1), "
+         "('fitness', 'Fitness', '', 0, 1), "
+         "('transit', 'Transit & Parking', '', 0, 1), "
+         "('drugstore', 'Drugstore', '', 0, 1), "
+         "('streaming', 'Streaming', '', 0, 1), "
+         "('other', 'Other / Misc', '', 0, 1), "
+         "('transfer', 'Account transfers', '', 0, 1)"]),
 ]
 
 SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0
@@ -112,6 +137,12 @@ def init_db() -> None:
         ).scalar()
     SQLModel.metadata.create_all(engine)
     _run_migrations(fresh=not existing)
+    # Fresh databases skip the migrations, so seed the builtin categories
+    # here as well. Imported inside the function to avoid an import cycle.
+    from .api_categories import seed_categories
+
+    with Session(engine) as session:
+        seed_categories(session)
 
 
 def get_session() -> Iterator[Session]:

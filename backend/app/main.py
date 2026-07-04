@@ -65,6 +65,8 @@ def _period_label(win: list[tuple[int, int]]) -> str:
     a, b = calendar.month_abbr[m0], calendar.month_abbr[m1]
     return f"{a}-{b} {y1}" if y0 == y1 else f"{a} {y0} - {b} {y1}"
 
+# Fallback labels only. The category table is the live source of truth for
+# category ids and labels; this dict covers ids missing from that table.
 CAT_LABEL = {
     "dining": "Dining & Delivery", "grocery": "Groceries", "gas": "Gas & EV Charging",
     "apple_hardware": "Apple Hardware (one-time)", "apple_services": "Apple Services",
@@ -158,6 +160,7 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET,
                    same_site="lax", https_only=settings.COOKIE_SECURE,
                    max_age=settings.SESSION_MAX_AGE_DAYS * 86400)
 from .api_cards import router as cards_router  # noqa: E402
+from .api_categories import router as categories_router  # noqa: E402
 from .api_settings import router as settings_router  # noqa: E402
 from .api_transactions import router as transactions_router  # noqa: E402
 from .categorize_llm import router as llm_router  # noqa: E402
@@ -168,6 +171,7 @@ from .subscriptions_engine import router as subs_router  # noqa: E402
 app.include_router(plaid_router)
 app.include_router(auth_router)
 app.include_router(cards_router)
+app.include_router(categories_router)
 app.include_router(settings_router)
 app.include_router(transactions_router)
 app.include_router(subs_router)

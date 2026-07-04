@@ -82,6 +82,20 @@ class Transaction(SQLModel, table=True):
     # shared bill and was paid back, 'thirdparty' = someone else's purchase
     # on this card, repaid in full. Both are excluded from all spend math.
     reimbursement: str | None = Field(default=None, index=True)
+    # Free-text user tag, e.g. "liam laptop" or "ski trip". The LLM
+    # categorizer reads it as an explicit signal when picking a category.
+    note: str | None = None
+
+
+class Category(SQLModel, table=True):
+    """A spending category. Builtins ship seeded; customs come from the user
+    or from the LLM categorizer proposing one off a transaction note."""
+
+    id: str = Field(primary_key=True)  # stable slug, e.g. ski_trip
+    label: str
+    color: str = ""  # hex like #fb7185, or empty for the UI default
+    hidden: bool = False
+    builtin: bool = False
 
 
 class IngestedFile(SQLModel, table=True):
