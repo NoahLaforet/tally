@@ -158,6 +158,7 @@ from .api_settings import router as settings_router  # noqa: E402
 from .api_transactions import router as transactions_router  # noqa: E402
 from .categorize_llm import router as llm_router  # noqa: E402
 from .demo import router as demo_router  # noqa: E402
+from .reimburse import router as reimburse_router  # noqa: E402
 from .subscriptions_engine import router as subs_router  # noqa: E402
 
 app.include_router(plaid_router)
@@ -168,6 +169,7 @@ app.include_router(transactions_router)
 app.include_router(subs_router)
 app.include_router(llm_router)
 app.include_router(demo_router)
+app.include_router(reimburse_router)
 
 @app.get("/healthz")
 def healthz() -> dict:
@@ -232,8 +234,17 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
     rewards_opt = 0.0
     months_with_data: set[tuple[int, int]] = set()
 
+    reimb_count = 0
+    reimb_total = 0
     for t in txns:
         if t.is_transfer:
+            continue
+        if t.reimbursement:
+            # Fronted for the group or bought for someone else and repaid:
+            # not the owner's spend, and the repayment inflow is not income.
+            if t.amount_cents < 0:
+                reimb_count += 1
+                reimb_total += -t.amount_cents
             continue
         ym = (t.posted_date.year, t.posted_date.month)
         bucket = win_index.get(ym)
@@ -298,6 +309,8 @@ def compute_dashboard(session: Session, months: int = 6) -> dict:
                  "ocr_unreconciled": session.exec(
                      select(func.count()).select_from(Transaction)
                      .where(Transaction.origin == "ocr")).one(),
+                 "reimbursed_excluded": {"count": reimb_count,
+                                         "total": round(reimb_total / 100, 2)},
                  "generated": date.today().isoformat()},
         "spend": {
             "monthly_avg": round(total / n / 100, 2), "total6": round(total / 100, 2),

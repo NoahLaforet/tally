@@ -78,6 +78,10 @@ class Transaction(SQLModel, table=True):
     # The Plaid transaction this row corresponds to (either inserted from it,
     # or matched to it). Guarantees live-sync and uploads never double count.
     plaid_txn_id: str | None = Field(default=None, index=True)
+    # Money that was not really spent by the owner: 'group' = fronted a
+    # shared bill and was paid back, 'thirdparty' = someone else's purchase
+    # on this card, repaid in full. Both are excluded from all spend math.
+    reimbursement: str | None = Field(default=None, index=True)
 
 
 class IngestedFile(SQLModel, table=True):

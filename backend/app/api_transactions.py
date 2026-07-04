@@ -42,7 +42,7 @@ MAX_PAGE_SIZE = 200
 COLUMNS = [
     "uid", "date", "amount", "amount_cents", "merchant", "description",
     "category", "category_source", "account_id", "account",
-    "is_transfer", "origin", "user_locked",
+    "is_transfer", "origin", "user_locked", "reimbursement",
 ]
 
 
@@ -95,6 +95,7 @@ def _row(t: Transaction, account_names: dict[int, str]) -> dict:
         "is_transfer": t.is_transfer,
         "origin": t.origin,
         "user_locked": t.user_locked,
+        "reimbursement": t.reimbursement,
     }
 
 
@@ -131,8 +132,13 @@ def list_transactions(session: Session, f: dict, page: int = 1,
     return {"total": total, "page": page, "page_size": page_size, "rows": rows}
 
 
+REIMBURSEMENT_KINDS = {"group", "thirdparty"}
+
+
 def apply_patch(session: Session, txn_uid: str, category: str | None,
-                user_locked: bool | None) -> dict | None:
+                user_locked: bool | None,
+                reimbursement: str | None = None,
+                clear_reimbursement: bool = False) -> dict | None:
     """Apply an inline edit to one transaction. Returns None on unknown uid.
 
     Setting a category is a manual override: it locks the row (unless the
@@ -173,6 +179,14 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
     elif user_locked is not None:
         txn.user_locked = user_locked
 
+    if clear_reimbursement:
+        txn.reimbursement = None
+    elif reimbursement is not None:
+        kind = reimbursement.strip().lower()
+        if kind not in REIMBURSEMENT_KINDS:
+            raise ValueError("reimbursement must be 'group' or 'thirdparty'")
+        txn.reimbursement = kind
+
     session.add(txn)
     session.commit()
     return {"ok": True, "updated_others": updated_others}
@@ -181,6 +195,10 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
 class TxnPatch(BaseModel):
     category: str | None = None
     user_locked: bool | None = None
+    # 'group' or 'thirdparty' marks money that came back; null clears when
+    # clear_reimbursement is set (a bare null must not clear by accident).
+    reimbursement: str | None = None
+    clear_reimbursement: bool = False
 
 
 @router.get("")
@@ -194,7 +212,8 @@ def api_list(page: int = 1, page_size: int = DEFAULT_PAGE_SIZE,
 def api_patch(txn_uid: str, body: TxnPatch,
               session: Session = Depends(get_session)) -> dict:
     try:
-        result = apply_patch(session, txn_uid, body.category, body.user_locked)
+        result = apply_patch(session, txn_uid, body.category, body.user_locked,
+                             body.reimbursement, body.clear_reimbursement)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     if result is None:

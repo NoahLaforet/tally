@@ -65,6 +65,9 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
          "ALTER TABLE subscription ADD COLUMN flag VARCHAR",
          "ALTER TABLE subscription ADD COLUMN norm_merchant VARCHAR",
          "CREATE INDEX IF NOT EXISTS ix_subscription_norm_merchant ON subscription (norm_merchant)"]),
+    # Reimbursement marking (group fronts / third-party purchases).
+    (7, ["ALTER TABLE \"transaction\" ADD COLUMN reimbursement VARCHAR",
+         "CREATE INDEX IF NOT EXISTS ix_transaction_reimbursement ON \"transaction\" (reimbursement)"]),
 ]
 
 SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0

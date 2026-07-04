@@ -199,6 +199,7 @@
   .badge.ocr{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent)}
   .badge.flag{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent)}
   .badge.dim{color:var(--text-faint);background:var(--chart-track)}
+  .badge.reimb{color:var(--good);background:color-mix(in srgb,var(--good) 15%,transparent)}
   .swatch{width:10px;height:10px;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:7px;box-shadow:0 0 8px -1px currentColor}
   .dot{width:8px;height:8px;border-radius:99px;display:inline-block;flex:none}
   .lockbtn{background:none;border:none;cursor:pointer;color:var(--text-faint);padding:4px;border-radius:6px;display:inline-grid;place-items:center}
@@ -615,7 +616,7 @@ function renderHero(){
     ? '<div class="stat rw"><div class="lbl">Rewards left / yr</div><div class="val">'+bigMoney(rw.gap_yr)+'</div><div class="foot">vs optimal card routing</div></div>'
     : '<div class="stat rw"><div class="lbl">Rewards / yr</div><div class="val">'+bigMoney(rw.now_yr||0)+'</div><div class="foot">card routing is optimal</div></div>';
   el('hero').innerHTML=
-    '<div class="stat out"><div class="lbl">Spending / mo</div><div class="val">'+bigMoney(D.spend.monthly_avg)+'</div><div class="foot">average over '+nFull+' full month'+(nFull===1?'':'s')+'</div></div>'+
+    '<div class="stat out"><div class="lbl">Spending / mo</div><div class="val">'+bigMoney(D.spend.monthly_avg)+'</div><div class="foot">average over '+nFull+' full month'+(nFull===1?'':'s')+((D.meta.reimbursed_excluded&&D.meta.reimbursed_excluded.count)?' · '+fmt(D.meta.reimbursed_excluded.total)+' repaid excluded':'')+'</div></div>'+
     '<div class="stat in"><div class="lbl">Income / mo</div><div class="val">'+bigMoney(incTot)+'</div><div class="foot">'+(INCOME.length?INCOME.length+' source'+(INCOME.length===1?'':'s'):'add sources in Budget')+'</div></div>'+
     '<div class="stat net"><div class="lbl">On hand</div><div class="val">'+bigMoney(onHand)+'</div><div class="foot">'+ACCOUNTS.length+' account'+(ACCOUNTS.length===1?'':'s')+'</div></div>'+
     rwCell;
@@ -750,6 +751,7 @@ function renderTransactions(){
           '<a class="minibtn" id="txCsv" href="/api/transactions/export.csv">Export CSV</a>'+
           '<a class="minibtn" id="txJson" href="/api/transactions/export.json">Export JSON</a>'+
         '</div>'+
+        '<div id="txSuggest"></div>'+
         '<div id="txBody"></div>'+
       '</div>';
     el('txQ').addEventListener('input',debounce(e=>{ TX.filters.q=e.target.value.trim(); TX.page=1; loadTx(); },350));
@@ -782,6 +784,7 @@ function txQuery(){
   return p;
 }
 async function loadTx(){
+  loadReimbSuggestions();
   TX.loading=true; TX.error='';
   const body=el('txBody'); if(body&&!TX.loaded) body.innerHTML=skelBlock(46)+'<div style="height:8px"></div>'+skelBlock(320);
   const p=txQuery(); p.set('page',TX.page); p.set('page_size',TX.page_size);
@@ -800,6 +803,8 @@ function txBadges(t){
   if(t.is_transfer) b+='<span class="badge transfer">transfer</span>';
   if(t.origin==='plaid') b+='<span class="badge plaid">plaid</span>';
   if(t.origin==='ocr') b+='<span class="badge ocr">ocr</span>';
+  if(t.reimbursement==='group') b+='<span class="badge reimb">repaid</span>';
+  if(t.reimbursement==='thirdparty') b+='<span class="badge reimb">not mine</span>';
   return b;
 }
 function renderTxBody(){
@@ -836,7 +841,11 @@ function renderTxBody(){
         '<td style="color:var(--text-dim)">'+esc(t.account||'')+'</td>'+
         '<td><button class="lockbtn" data-lock="'+esc(t.uid)+'" aria-pressed="'+(t.user_locked?'true':'false')+'" '+
           'aria-label="'+(t.user_locked?'Unlock category for ':'Lock category for ')+esc(t.merchant||'transaction')+'" '+
-          'title="'+(t.user_locked?'Category locked; click to unlock':'Lock this category')+'">'+lockSvg+'</button></td>'+
+          'title="'+(t.user_locked?'Category locked; click to unlock':'Lock this category')+'">'+lockSvg+'</button>'+
+          (credit?'':'<button class="lockbtn" data-reimb="'+esc(t.uid)+'" '+
+          'aria-label="Mark repayment status for '+esc(t.merchant||'transaction')+'" '+
+          'title="'+(t.reimbursement?'Marked as paid back; click to change':'Mark as paid back (group front / someone else\u2019s)')+'"'+
+          (t.reimbursement?' style="color:var(--good)"':'')+'>\u21A9</button>')+'</td>'+
       '</tr>';
     }).join('')+
     '</tbody></table></div>'+
@@ -853,6 +862,59 @@ function txBodyClick(e){
   if(editBtn){ openCatEditor(editBtn); return; }
   const lockBtn=e.target.closest('[data-lock]');
   if(lockBtn){ toggleLock(lockBtn.getAttribute('data-lock')); return; }
+  const rbBtn=e.target.closest('[data-reimb]');
+  if(rbBtn){ openReimbEditor(rbBtn); return; }
+}
+const REIMB_LABELS={'':'Counts as my spending',group:'Group front, paid back',thirdparty:'Someone else\u2019s, paid back'};
+function openReimbEditor(btn){
+  const uid=btn.getAttribute('data-reimb');
+  const row=TX.rows.find(r=>r.uid===uid); if(!row) return;
+  const sel=document.createElement('select');
+  sel.setAttribute('aria-label','Repayment status');
+  sel.innerHTML=Object.keys(REIMB_LABELS).map(k=>'<option value="'+k+'"'+((row.reimbursement||'')===k?' selected':'')+'>'+esc(REIMB_LABELS[k])+'</option>').join('');
+  btn.replaceWith(sel);
+  sel.focus();
+  let done=false;
+  sel.addEventListener('change',()=>{ if(done) return; done=true; setReimb(uid,sel.value||null); });
+  sel.addEventListener('blur',()=>{ if(!done){ done=true; renderTxBody(); } });
+}
+async function setReimb(uid,kind){
+  const body=kind?{reimbursement:kind}:{clear_reimbursement:true};
+  try{
+    await fetchJSON('/api/transactions/'+encodeURIComponent(uid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    toast(kind?'Excluded from your spending':'Counted as your spending again');
+    TXSUG.stale=true;
+    await Promise.all([loadTx(),reloadCore()]);
+  }catch(e){ toast('Could not update: '+e.message); loadTx(); }
+}
+/* Repayment suggestions: charges followed by inflows adding back to the
+   exact amount. Loaded once per session, refreshed after any marking. */
+const TXSUG={rows:[],loaded:false,stale:false,hidden:{}};
+async function loadReimbSuggestions(){
+  if(TXSUG.loaded&&!TXSUG.stale) return;
+  try{ TXSUG.rows=await fetchJSON('/api/reimbursements/suggestions'); }
+  catch(e){ TXSUG.rows=[]; }
+  TXSUG.loaded=true; TXSUG.stale=false;
+  renderReimbBanner();
+}
+function renderReimbBanner(){
+  const host=el('txSuggest'); if(!host) return;
+  const rows=TXSUG.rows.filter(s=>!TXSUG.hidden[s.uid]);
+  if(!rows.length){ host.innerHTML=''; return; }
+  host.innerHTML='<div class="callout info" role="region" aria-label="Possible repayments">'+
+    '<div style="flex:1"><b>'+rows.length+' charge'+(rows.length===1?' looks':'s look')+' paid back.</b> '+
+    'Money went out and the same amount came back within two weeks. Exclude them from your spending?'+
+    rows.slice(0,5).map(s=>'<div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
+      '<span>'+esc(s.date)+' · <b>'+esc(s.merchant)+'</b> '+fmt2(s.amount)+' \u2190 '+
+      s.repaid_by.map(l=>esc(l.merchant)).join(' + ')+'</span>'+
+      '<button class="minibtn" data-sug-group="'+esc(s.uid)+'">Group front</button>'+
+      '<button class="minibtn" data-sug-third="'+esc(s.uid)+'">Someone else\u2019s</button>'+
+      '<button class="minibtn" data-sug-skip="'+esc(s.uid)+'">Skip</button></div>').join('')+
+    (rows.length>5?'<div style="margin-top:7px;color:var(--text-dim)">and '+(rows.length-5)+' more below as \u21A9 on each row</div>':'')+
+    '</div></div>';
+  host.querySelectorAll('[data-sug-group]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-group'),'group')));
+  host.querySelectorAll('[data-sug-third]').forEach(b=>b.addEventListener('click',()=>setReimb(b.getAttribute('data-sug-third'),'thirdparty')));
+  host.querySelectorAll('[data-sug-skip]').forEach(b=>b.addEventListener('click',()=>{ TXSUG.hidden[b.getAttribute('data-sug-skip')]=1; renderReimbBanner(); }));
 }
 function openCatEditor(btn){
   const uid=btn.getAttribute('data-editcat');
