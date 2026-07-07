@@ -156,6 +156,42 @@
   .brow .verdict{font-size:11.5px;white-space:nowrap;font-weight:550}
   .over{color:var(--bad)} .under{color:var(--good)} .onpar{color:var(--text-faint)}
 
+  /* pace module: the "am I on pace this month" instrument. One bar carries
+     four facts at once: spent-now (fill), typical-by-today (line), the cap
+     (line), and the projected finish (caret). */
+  .pace{padding:23px 25px}
+  .pace-top{display:flex;justify-content:space-between;align-items:baseline;gap:18px;flex-wrap:wrap}
+  .pace-title{font-size:14.5px;font-weight:600;color:var(--text-dim);margin:0}
+  .pace-title .day{color:var(--text-faint);font-weight:450;margin-left:7px}
+  .pace-amounts{text-align:right;margin-left:auto}
+  .pace-spent{font-size:40px;font-weight:800;letter-spacing:-0.045em;line-height:1;font-variant-numeric:tabular-nums}
+  .pace-spent .c{font-size:18px;color:var(--text-dim);font-weight:600}
+  .pace-spent-lbl{font-size:11.5px;color:var(--text-faint);margin-top:6px;font-weight:450}
+  .pace-spent-lbl b{color:var(--text-dim);font-weight:600}
+  .pace-bar{position:relative;height:16px;background:var(--chart-track);border-radius:8px;margin:30px 0 0}
+  .pace-fill{height:100%;border-radius:8px;box-shadow:0 0 14px -3px currentColor}
+  @media (prefers-reduced-motion: no-preference){ .pace-fill{transition:width .55s var(--ease)} }
+  .pace-fill.under{background:var(--good);color:var(--good)}
+  .pace-fill.watch{background:var(--warn);color:var(--warn)}
+  .pace-fill.over{background:var(--bad);color:var(--bad)}
+  .pace-tick{position:absolute;top:-4px;bottom:-4px;width:2px;border-radius:2px}
+  .pace-tick.typ{background:var(--text);opacity:.5}
+  .pace-tick.cap{background:var(--accent);opacity:.85}
+  .pace-caret{position:absolute;top:-14px;transform:translateX(-50%);font-size:11px;line-height:1;color:var(--text-dim)}
+  .pace-legend2{display:flex;gap:20px;flex-wrap:wrap;margin-top:20px;font-size:12.5px;color:var(--text-dim);font-variant-numeric:tabular-nums}
+  .pace-legend2 span{display:inline-flex;align-items:center;gap:8px}
+  .pace-legend2 b{color:var(--text);font-weight:600}
+  .pace-key{width:14px;border-top:2px solid;display:inline-block}
+  .pace-key.dash{border-top-style:dashed}
+  .pace-verdict{margin-top:19px;font-size:13.5px;line-height:1.55;color:var(--text-dim)}
+  .pace-verdict b{color:var(--text);font-weight:650}
+  .pace-verdict.under b.k{color:var(--good)} .pace-verdict.over b.k{color:var(--bad)} .pace-verdict.watch b.k{color:var(--warn)}
+  .pace-capedit{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin-top:18px;padding-top:17px;border-top:1px solid var(--glass-edge)}
+  .pace-capedit .lab{font-size:13px;color:var(--text-dim);font-weight:500}
+  .pace-setcap{text-align:center;margin-top:26px}
+  .pace-setcap .t{font-size:14px;font-weight:600;color:var(--text);margin-bottom:5px}
+  .pace-setcap .h{font-size:12.5px;color:var(--text-faint);max-width:46ch;margin:0 auto 13px}
+
   /* inputs (>=16px so iOS never zooms) */
   input,select,textarea{font-family:var(--font);font-size:16px;color:var(--text);background:var(--glass-2);
     -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid var(--glass-edge);border-radius:10px;
@@ -395,7 +431,7 @@ const pctf=(bps)=> (num(bps)/100).toLocaleString('en-US',{maximumFractionDigits:
 
 /* ============================== state ============================== */
 let D=null, SUBS=[], ACCOUNTS=[], BUDGETS=[], INCOME=[], CARDS=[], SPLAN=null;
-let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[];
+let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[], PACE=null;
 const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:''};
 let ACTIVE='overview';
 
@@ -547,15 +583,17 @@ function showLoadError(msg){
   const b=el('retryBoot'); if(b) b.addEventListener('click',boot);
 }
 async function loadCore(){
-  const [ov,subs,accts,budgets,income,cards,splan,cats]=await Promise.all([
+  const [ov,subs,accts,budgets,income,cards,splan,cats,pace]=await Promise.all([
     fetchJSON('/api/overview'), fetchJSON('/api/subscriptions'), fetchJSON('/api/accounts'),
     fetchJSON('/api/budgets'), fetchJSON('/api/income'), fetchJSON('/api/cards'), fetchJSON('/api/savings-plan'),
     fetchJSON('/api/categories').catch(()=>null), // optional: older backends lack it; fallbacks cover us
+    fetchJSON('/api/pace').catch(()=>null),        // optional: older backends lack it
   ]);
   D=ov; SUBS=Array.isArray(subs)?subs:[]; ACCOUNTS=Array.isArray(accts)?accts:[];
   BUDGETS=Array.isArray(budgets)?budgets:[]; INCOME=Array.isArray(income)?income:[];
   CARDS=Array.isArray(cards)?cards:[]; SPLAN=splan||{monthly:0,goal:0,note:''};
   if(Array.isArray(cats)) CATS=cats;
+  PACE=pace||null;
 }
 let booted=false;
 async function boot(){
@@ -638,40 +676,106 @@ function renderHero(){
     rwCell;
 }
 
+/* ============================== pace module ============================== */
+/* The instrument that answers "am I on pace this month". Shared by Overview
+   (read-only) and Budget (with the cap editor). One bar shows spent-now, the
+   typical position by today, the cap, and the projected finish. */
+function pacePct(v,scale){ return Math.max(0,Math.min(100,(num(v)/Math.max(scale,1))*100)); }
+function paceVerdict(p){
+  const capSet=!!p.cap_set, d=p.day_of_month;
+  const spent=fmt(p.spent), typ=fmt(p.typical_by_today), proj=fmt(p.projected), cap=fmt(p.cap), left=fmt(p.left_to_spend);
+  const ahead=fmt(Math.abs(num(p.pace_delta)));
+  if(p.state==='over'){
+    if(num(p.spent)>num(p.cap))
+      return {cls:'over', html:'<b class="k">Over your cap.</b> You have spent <b>'+spent+'</b> of a <b>'+cap+'</b> cap, with '+(p.days_in_month-d)+' day'+((p.days_in_month-d)===1?'':'s')+' left.'};
+    return {cls:'over', html:'<b class="k">Headed over.</b> At this pace you finish near <b>'+proj+'</b>, past your <b>'+cap+'</b> cap. <b>'+left+'</b> left for the rest of the month.'};
+  }
+  if(p.state==='watch'){
+    return {cls:'watch', html:'<b class="k">Running hot.</b> <b>'+ahead+'</b> ahead of a typical <b>'+typ+'</b> by day '+d+'. On track for about <b>'+proj+'</b>'+(capSet?(' against your <b>'+cap+'</b> cap.'):'.')};
+  }
+  if(capSet)
+    return {cls:'under', html:'<b class="k">On pace.</b> <b>'+left+'</b> left to spend, on track to finish around <b>'+proj+'</b> under your <b>'+cap+'</b> cap.'};
+  return {cls:'under', html:'<b class="k">On pace.</b> You are at <b>'+spent+'</b>; a typical day-'+d+' sits near <b>'+typ+'</b>.'};
+}
+function renderPaceModule(opts){
+  opts=opts||{};
+  const p=PACE;
+  if(!p) return '';
+  const spent=num(p.spent), typ=num(p.typical_by_today), typMo=num(p.typical_monthly), proj=num(p.projected);
+  const capSet=!!p.cap_set, cap=num(p.cap), left=num(p.left_to_spend), suggested=num(p.suggested_cap), state=p.state||'under';
+  const scale=Math.max(spent,typ,proj,capSet?cap:0,typMo,1)*1.06;
+  const fillPct=pacePct(spent,scale), typPct=pacePct(typ,scale), projPct=pacePct(proj,scale);
+  const vd=paceVerdict(p);
+  // header amounts: spent is the hero; left-to-spend rides beneath when capped
+  const heroLbl=capSet
+    ? '<b>'+fmt(left)+'</b> left of your '+fmt(cap)+' cap'
+    : 'spent so far';
+  let bar='<div class="pace-bar">'+
+    '<div class="pace-fill '+state+'" style="width:'+fillPct+'%"></div>'+
+    (typ>0?'<div class="pace-tick typ" style="left:'+typPct+'%" title="typical by today"></div>':'')+
+    (capSet?'<div class="pace-tick cap" style="left:'+pacePct(cap,scale)+'%" title="monthly cap"></div>':'')+
+    (proj>0&&spent>0?'<div class="pace-caret" style="left:'+projPct+'%" title="projected finish">&#9662;</div>':'')+
+    '</div>';
+  let legend='<div class="pace-legend2">'+
+    '<span><span class="pace-key" style="border-color:var(--'+(state==='over'?'bad':state==='watch'?'warn':'good')+')"></span>spent <b>'+fmt(spent)+'</b></span>'+
+    (typ>0?'<span><span class="pace-key" style="border-color:var(--text);opacity:.6"></span>typical by today <b>'+fmt(typ)+'</b></span>':'')+
+    (capSet?'<span><span class="pace-key" style="border-color:var(--accent)"></span>cap <b>'+fmt(cap)+'</b></span>':'')+
+    '<span><span class="pace-key dash" style="border-color:var(--text-dim)"></span>projected <b>'+fmt(proj)+'</b></span>'+
+    '</div>';
+  let capEdit='';
+  if(opts.editable){
+    capEdit='<div class="pace-capedit"><span class="lab">Monthly cap</span>'+
+      '<span class="inline-edit"><span class="pre">$</span><input class="money" type="number" id="paceCap" value="'+(capSet?cap:'')+'" min="0" step="50" placeholder="'+(suggested||0)+'" aria-label="Overall monthly spending cap"></span>'+
+      (suggested>0?'<button class="minibtn acc" id="paceSuggest">Suggest '+fmt(suggested)+'</button>':'')+
+      (capSet?'<button class="minibtn del" id="paceClear">Clear</button>':'')+
+      '</div>';
+  } else if(!capSet){
+    capEdit='<div class="pace-setcap"><div class="t">No cap set</div><div class="h">Set an overall monthly cap in <a href="#" data-go="budget">Budget</a> to track left-to-spend and get pace warnings.</div></div>';
+  }
+  return '<div class="panel pace">'+
+    '<div class="pace-top"><h2 class="pace-title">'+esc(p.month)+'<span class="day">Day '+p.day_of_month+' of '+p.days_in_month+'</span></h2>'+
+      '<div class="pace-amounts"><div class="pace-spent">'+bigMoney(spent)+'</div><div class="pace-spent-lbl">'+heroLbl+'</div></div></div>'+
+    bar+legend+
+    '<div class="pace-verdict '+vd.cls+'">'+vd.html+'</div>'+
+    capEdit+
+    '</div>';
+}
+const savePaceCap=debounce(async function(val){
+  try{
+    PACE=await fetchJSON('/api/pace/cap',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({cap:val})});
+    if(ACTIVE==='budget') renderBudget(); else renderOverview();
+    toast(val==null?'Monthly cap cleared':'Monthly cap saved');
+  }catch(e){ toast('Could not save cap: '+e.message); }
+},500);
+function wirePaceCap(){
+  const inp=el('paceCap');
+  if(inp) inp.addEventListener('change',e=>{ const v=num(e.target.value); savePaceCap(v>0?v:null); });
+  const sug=el('paceSuggest');
+  if(sug) sug.addEventListener('click',()=>{ const s=num(PACE&&PACE.suggested_cap); if(s>0) savePaceCap(s); });
+  const clr=el('paceClear');
+  if(clr) clr.addEventListener('click',()=>savePaceCap(null));
+}
+
 /* ============================== overview ============================== */
 function renderOverview(){
   const v=el('v-overview');
   if(!D){ v.innerHTML=''; return; }
-  const recur=recurCats();
-  const top=recur.slice().sort((a,b)=>b.monthly-a.monthly).slice(0,6).map(c=>({nm:c.label,v:c.monthly,c:catColor(c.id)}));
-  const maxC=Math.max.apply(null,top.map(t=>num(t.v)).concat([1]));
-  const dv=D.delivery||{};
-  const gm=D.gambling||{};
   const partial=D.meta.months.length>num(D.meta.full_months_with_data);
   let html='';
+  // The pace instrument is the reason to open the app; it leads every day.
+  const pace=renderPaceModule();
+  if(pace) html+=pace;
+  // One action item: the rewards gap, only when it is worth acting on.
   if(num(D.rewards.gap_yr)>0.5){
     html+='<div class="callout good"><div class="big">'+fmt(D.rewards.gap_yr)+'/yr</div><div class="txt">'+
       '<b>Rewards gap.</b> Routing each category to its best card would earn about '+fmt(D.rewards.gap_yr)+' more per year. '+
       'Largest gap: '+esc(D.rewards.top_label||'')+(D.rewards.top_card?(' currently on '+esc(D.rewards.top_card)):'')+'. '+
       'See <a href="#" data-go="spending">Spending</a> for the per-purchase answer.</div></div>';
   }
-  html+='<div class="grid2">'+
-    '<div class="panel"><h2>Monthly spending</h2><p class="desc">Total per month over the current window'+(partial?'; the newest month is still filling in':'')+'.</p>'+
-      svgTrend(D.spend.trend,D.meta.months,{partialLast:partial,label:'Monthly spending, '+D.meta.period})+'</div>'+
-    '<div class="panel"><h2>Where it goes</h2><p class="desc">Top categories, monthly average.</p>'+barRows(top,maxC)+'</div>'+
-    '</div>';
-  const cells=[];
-  if(num(dv.orders)>0){
-    cells.push('<div class="callout bad" style="margin:0"><div class="big">'+fmt(dv.monthly)+'</div><div class="txt"><b>Food delivery / mo.</b> '+
-      dv.orders+' orders in this window, '+fmt2(dv.avg_order)+' average.</div></div>');
-  }
-  cells.push('<div class="callout info" style="margin:0"><div class="big">'+fmt(monthlyTotal())+'</div><div class="txt"><b>Recurring spend / mo.</b> Excludes one-time purchases; this is what <a href="#" data-go="budget">Budget</a> targets.</div></div>');
-  if(num(gm.total6)>0){
-    cells.push('<div class="callout" style="margin:0"><div class="big">'+fmt(gm.monthly)+'</div><div class="txt"><b>Flagged merchants / mo</b>'+
-      ((gm.merchants&&gm.merchants.length)?(' ('+esc(gm.merchants.slice(0,3).join(', '))+')'):'')+
-      '. Tracked separately so it stays visible.</div></div>');
-  }
-  html+='<div class="grid3">'+cells.join('')+'</div>';
+  // One trend: the longer arc behind this month. The category detail, spend
+  // mix, delivery and flagged-merchant depth all live in Spending now.
+  html+='<div class="panel"><h2>Monthly spending</h2><p class="desc">Total per month over the current window'+(partial?'; the newest month is still filling in':'')+'. Full breakdown in <a href="#" data-go="spending">Spending</a>.</p>'+
+    svgTrend(D.spend.trend,D.meta.months,{partialLast:partial,label:'Monthly spending, '+D.meta.period})+'</div>';
   v.innerHTML=html;
 }
 
@@ -686,6 +790,11 @@ function renderSpending(){
   const cardsSpend=Object.entries(D.cards||{}).map(([k,val])=>({nm:cardName(k),v:val,c:cardColor(k)})).sort((a,b)=>b.v-a.v);
   const cardMax=Math.max.apply(null,cardsSpend.map(c=>num(c.v)).concat([1]));
   const hw=(D.categories||[]).find(c=>c.id==='apple_hardware');
+  // Behavioral flags moved off the Overview glance; they belong with the depth.
+  const dv=D.delivery||{}, gm=D.gambling||{};
+  const flagCells=[];
+  if(num(dv.orders)>0) flagCells.push('<div class="callout bad" style="margin:0"><div class="big">'+fmt(dv.monthly)+'</div><div class="txt"><b>Food delivery / mo.</b> '+dv.orders+' orders in this window, '+fmt2(dv.avg_order)+' average.</div></div>');
+  if(num(gm.total6)>0) flagCells.push('<div class="callout" style="margin:0"><div class="big">'+fmt(gm.monthly)+'</div><div class="txt"><b>Flagged merchants / mo</b>'+((gm.merchants&&gm.merchants.length)?(' ('+esc(gm.merchants.slice(0,3).join(', '))+')'):'')+'. Tracked separately so it stays visible.</div></div>');
   v.innerHTML=
     '<div class="grid2">'+
       '<div class="panel"><h2>Category breakdown</h2><p class="desc">Monthly average over the current window.'+
@@ -699,6 +808,7 @@ function renderSpending(){
         '<div class="panel"><h2>By card</h2><p class="desc">Where spend lands today.</p>'+barRows(cardsSpend,cardMax)+'</div>'+
       '</div>'+
     '</div>'+
+    (flagCells.length?('<div class="grid2">'+flagCells.join('')+'</div>'):'')+
     '<div class="panel"><h2>Which card should I use?</h2><p class="desc">Pick a category, or type a merchant and Tally matches it from your data. Best card by your own reward rules.</p>'+
       '<div class="row-actions">'+
         '<input id="routerMerchant" type="search" placeholder="Merchant (optional)" style="max-width:240px" aria-label="Merchant name">'+
@@ -1051,7 +1161,6 @@ async function toggleLock(uid){
 }
 
 /* ============================== budget ============================== */
-const TARGETS={};
 function budgetCats(){
   const map={};
   BUDGETS.forEach(b=>{ map[b.category]={id:b.category,target:num(b.target),monthly:0}; });
@@ -1062,71 +1171,28 @@ function budgetCats(){
   delete map.apple_hardware;
   return Object.values(map).sort((a,b)=>b.monthly-a.monthly);
 }
-const saveBudgets=debounce(async function(){
-  try{
-    await fetchJSON('/api/budgets',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({targets:TARGETS})});
-    toast('Budget targets saved');
-  }catch(e){ toast('Could not save budgets: '+e.message); }
-},700);
 function renderBudget(){
   const v=el('v-budget');
   if(!D){ v.innerHTML=''; return; }
+  // Rocket-Money model: one overall cap with a pace bar, not per-category
+  // sprawl. Categories below just report where the money actually went.
   const cats=budgetCats();
-  Object.keys(TARGETS).forEach(k=>delete TARGETS[k]);
-  cats.forEach(c=>{ TARGETS[c.id]=c.target; });
+  const items=cats.map(c=>({nm:catLabel(c.id),v:c.monthly,c:catColor(c.id)}));
+  const maxC=Math.max.apply(null,items.map(t=>num(t.v)).concat([1]));
+  const pace=renderPaceModule({editable:true});
   v.innerHTML=
-    '<div id="bud-summary"></div>'+
-    '<div class="panel"><h2>Targets vs actual</h2><p class="desc">Bar shows actual monthly spend; the marker is your target. Edits save automatically.</p>'+
-      '<div id="bud-rows">'+cats.map(budgetRow).join('')+'</div>'+
-      '<div class="legend"><span><span class="swatch" style="background:var(--bad)"></span>over target</span><span><span class="swatch" style="background:var(--good)"></span>under target</span><span>| target marker</span></div>'+
-    '</div>'+
+    (pace||'<div class="panel"><div class="empty"><div class="t">Pace unavailable</div><div class="h">Upload a statement or connect a bank to start tracking this month.</div></div></div>')+
+    '<div class="panel"><h2>Where it goes</h2><p class="desc">Monthly average by category over the current window. Your cap holds the line on the total; there are no per-category budgets to babysit.</p>'+
+      barRows(items,maxC)+'</div>'+
     '<div class="grid2">'+
-      '<div class="panel"><h2>Income</h2><p class="desc">Recurring monthly income; the cash-flow summary measures spending against it.</p><div id="bud-income"></div></div>'+
+      '<div class="panel"><h2>Income</h2><p class="desc">Recurring monthly income; the cash-flow line measures spending against it.</p><div id="bud-income"></div></div>'+
       '<div class="panel"><h2>Savings plan</h2><p class="desc">A monthly amount and a goal. Tally does the arithmetic.</p><div id="bud-savings"></div></div>'+
     '</div>'+
     '<div id="bud-options"></div>';
-  renderBudgetSummary();
+  wirePaceCap();
   renderIncomeSection();
   renderSavingsSection();
   renderSavingsOptions();
-  el('bud-rows').addEventListener('change',e=>{
-    const inp=e.target.closest('[data-tgt]'); if(!inp) return;
-    const id=inp.getAttribute('data-tgt');
-    TARGETS[id]=Math.max(0,num(inp.value));
-    const c=budgetCats().find(x=>x.id===id);
-    if(c){ c.target=TARGETS[id]; const holder=el('brow-'+id); if(holder) holder.outerHTML=budgetRow(c); }
-    const b=BUDGETS.find(x=>x.category===id); if(b) b.target=TARGETS[id];
-    renderBudgetSummary();
-    saveBudgets();
-  });
-}
-function budgetRow(c){
-  const tgt=TARGETS[c.id]!=null?TARGETS[c.id]:c.target, act=c.monthly;
-  const max=Math.max(act,tgt,1)*1.12;
-  const diff=act-tgt, pctT=(tgt/max)*100, pctA=(act/max)*100;
-  const over=diff>5, under=diff<-5;
-  const col=over?'var(--bad)':(under?'var(--good)':'var(--text-faint)');
-  const verdict=over?('<span class="over">'+fmt(diff)+' over</span>')
-    :under?('<span class="under">'+fmt(-diff)+' under</span>')
-    :'<span class="onpar">on target</span>';
-  return '<div class="brow" id="brow-'+esc(c.id)+'">'+
-    '<div class="nm">'+esc(catLabel(c.id))+'<span class="subnm">actual '+fmt(act)+'/mo</span></div>'+
-    '<div class="tgt-track"><div class="tgt-fill" style="width:'+pctA+'%;background:color-mix(in srgb,'+col+' 26%,transparent);border-right:2px solid '+col+'"></div><div class="tgt-mark" style="left:'+pctT+'%"></div></div>'+
-    '<div class="ctl"><span class="verdict">'+verdict+'</span><span class="inline-edit"><span class="pre">$</span>'+
-      '<input class="money" type="number" data-tgt="'+esc(c.id)+'" value="'+tgt+'" min="0" step="5" aria-label="Monthly target for '+esc(catLabel(c.id))+'"></span></div>'+
-    '</div>';
-}
-function renderBudgetSummary(){
-  const cats=budgetCats();
-  let actual=0,target=0;
-  cats.forEach(c=>{ actual+=c.monthly; target+=(TARGETS[c.id]!=null?TARGETS[c.id]:c.target); });
-  const net=actual-target;
-  el('bud-summary').innerHTML=
-    '<div class="callout '+(net>5?'bad':'good')+'"><div class="big">'+(net>0?'+':'')+fmt(net)+'/mo</div>'+
-    '<div class="txt">'+(net>5
-      ? 'Spending runs <b>'+fmt(net)+'/mo over</b> the combined targets ('+fmt(net*12)+'/yr). The rows below show where.'
-      : 'Spending is at or under the combined targets.')+
-    '<br><span style="color:var(--text-faint)">Actual '+fmt(actual)+'/mo · target '+fmt(target)+'/mo</span></div></div>';
 }
 function renderIncomeSection(){
   const host=el('bud-income'); if(!host) return;
