@@ -204,6 +204,14 @@
   .alert-time{font-size:11px;color:var(--text-faint);white-space:nowrap;margin-top:3px}
   .tab .tabdot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--accent);margin-left:6px;vertical-align:1px;box-shadow:0 0 8px -1px var(--glow)}
 
+  /* bulk transaction actions */
+  .bulkbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin-bottom:12px;border-radius:var(--r-sm);
+    background:color-mix(in srgb,var(--accent) 12%,var(--glass-2));border:1px solid var(--accent-soft)}
+  .bulkbar .bulkn{font-size:13px;color:var(--text-dim)} .bulkbar .bulkn b{color:var(--text);font-weight:650}
+  th.selcell,td.selcell{width:32px;text-align:center;padding-left:8px;padding-right:0}
+  th.selcell input,td.selcell input{width:auto;cursor:pointer;margin:0}
+  tbody tr:has(input[data-sel]:checked){background:var(--accent-soft)}
+
   /* inputs (>=16px so iOS never zooms) */
   input,select,textarea{font-family:var(--font);font-size:16px;color:var(--text);background:var(--glass-2);
     -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid var(--glass-edge);border-radius:10px;
@@ -444,7 +452,7 @@ const pctf=(bps)=> (num(bps)/100).toLocaleString('en-US',{maximumFractionDigits:
 /* ============================== state ============================== */
 let D=null, SUBS=[], ACCOUNTS=[], BUDGETS=[], INCOME=[], CARDS=[], SPLAN=null;
 let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[], PACE=null, ALERTS_UNREAD=0;
-const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:''};
+const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:'',selected:new Set()};
 let ACTIVE='overview';
 
 const CATCOLOR={transfer:'#64748b',dining:'#fb7185',grocery:'#34d399',gas:'#fbbf24',apple_hardware:'#a78bfa',apple_services:'#a78bfa',
@@ -912,6 +920,7 @@ function renderTransactions(){
       loadTx();
     });
     el('txBody').addEventListener('click',txBodyClick);
+    el('txBody').addEventListener('change',txBodyChange);
   }
   const catSel=el('txCat');
   const cur=catSel.value;
@@ -934,6 +943,7 @@ function txQuery(){
 }
 async function loadTx(){
   loadReimbSuggestions();
+  TX.selected.clear();  // selection is scoped to the current page + filters
   TX.loading=true; TX.error='';
   const body=el('txBody'); if(body&&!TX.loaded) body.innerHTML=skelBlock(46)+'<div style="height:8px"></div>'+skelBlock(320);
   const p=txQuery(); p.set('page',TX.page); p.set('page_size',TX.page_size);
@@ -976,13 +986,18 @@ function renderTxBody(){
   const pages=Math.max(1,Math.ceil(TX.total/TX.page_size));
   const from=(TX.page-1)*TX.page_size+1, to=Math.min(TX.total,TX.page*TX.page_size);
   const lockSvg='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+  const allSel=TX.rows.length>0&&TX.rows.every(r=>TX.selected.has(r.uid));
   body.innerHTML=
-    '<div class="tablewrap"><table><thead><tr><th>Date</th><th>Merchant</th><th style="text-align:right">Amount</th><th>Category</th><th>Account</th><th aria-label="Lock"></th></tr></thead><tbody>'+
+    bulkBar()+
+    '<div class="tablewrap"><table><thead><tr>'+
+      '<th class="selcell"><input type="checkbox" data-selall aria-label="Select all on this page"'+(allSel?' checked':'')+'></th>'+
+      '<th>Date</th><th>Merchant</th><th style="text-align:right">Amount</th><th>Category</th><th>Account</th><th aria-label="Lock"></th></tr></thead><tbody>'+
     TX.rows.map(t=>{
       const credit=num(t.amount)>0;
       const amt=credit?('<span class="pos">+'+fmt2(t.amount)+'</span>'):fmt2(-t.amount);
       const noteFull=String(t.note||'');
       return '<tr data-uid="'+esc(t.uid)+'"'+sugClass(t.uid)+'>'+
+        '<td class="selcell"><input type="checkbox" data-sel="'+esc(t.uid)+'"'+(TX.selected.has(t.uid)?' checked':'')+' aria-label="Select transaction"></td>'+
         '<td class="num" style="text-align:left;color:var(--text-dim)">'+esc(t.date)+'</td>'+
         '<td title="'+esc(t.description||'')+'"><b style="font-weight:550">'+esc(t.merchant||'')+'</b>'+txBadges(t)+
           (noteFull?('<span style="display:block;font-size:11.5px;color:var(--text-faint)" title="'+esc(noteFull)+'">'+esc(shortName(noteFull,60))+'</span>'):'')+'</td>'+
@@ -1013,6 +1028,14 @@ function renderTxBody(){
   if(nx) nx.addEventListener('click',()=>{ TX.page++; loadTx(); });
 }
 function txBodyClick(e){
+  const bulkBtn=e.target.closest('[data-bulk]');
+  if(bulkBtn){
+    const a=bulkBtn.getAttribute('data-bulk');
+    if(a==='clearsel'){ TX.selected.clear(); renderTxBody(); }
+    else if(a==='group'||a==='thirdparty'){ applyBulk({reimbursement:a}); }
+    else if(a==='clear'){ applyBulk({clear_reimbursement:true}); }
+    return;
+  }
   const editBtn=e.target.closest('[data-editcat]');
   if(editBtn){ openCatEditor(editBtn); return; }
   const lockBtn=e.target.closest('[data-lock]');
@@ -1021,6 +1044,44 @@ function txBodyClick(e){
   if(rbBtn){ openReimbEditor(rbBtn); return; }
   const noteBtn=e.target.closest('[data-note]');
   if(noteBtn){ openNoteEditor(noteBtn); return; }
+}
+function txBodyChange(e){
+  const cb=e.target.closest('[data-sel]');
+  if(cb){ if(cb.checked) TX.selected.add(cb.getAttribute('data-sel')); else TX.selected.delete(cb.getAttribute('data-sel')); renderTxBody(); return; }
+  if(e.target.matches('[data-selall]')){
+    const on=e.target.checked;
+    TX.rows.forEach(r=>{ if(on) TX.selected.add(r.uid); else TX.selected.delete(r.uid); });
+    renderTxBody(); return;
+  }
+  if(e.target.matches('#bulkCat')){ const v=e.target.value; e.target.value=''; if(v) applyBulk({category:v}); return; }
+}
+function bulkBar(){
+  const n=TX.selected.size;
+  if(!n) return '';
+  return '<div class="bulkbar">'+
+    '<span class="bulkn"><b>'+n+'</b> selected</span>'+
+    '<span class="inline-edit"><select id="bulkCat" aria-label="Recategorize selected"><option value="">Recategorize…</option>'+
+      allCats().map(c=>'<option value="'+esc(c)+'">'+esc(catLabel(c))+'</option>').join('')+'</select></span>'+
+    '<button class="minibtn" data-bulk="group">Mark repaid</button>'+
+    '<button class="minibtn" data-bulk="thirdparty">Mark not mine</button>'+
+    '<button class="minibtn" data-bulk="clear">Clear repayment</button>'+
+    '<span style="flex:1"></span>'+
+    '<button class="minibtn" data-bulk="clearsel">Cancel</button>'+
+  '</div>';
+}
+async function applyBulk(payload){
+  const uids=[...TX.selected];
+  if(!uids.length) return;
+  try{
+    const j=await fetchJSON('/api/transactions/bulk',jbody(Object.assign({uids:uids},payload)));
+    const n=num(j.updated);
+    const msg=payload.category?('Recategorized '+n+' to '+catLabel(payload.category))
+      :payload.clear_reimbursement?('Cleared repayment on '+n)
+      :('Marked '+n+(payload.reimbursement==='group'?' as repaid':' as not mine'));
+    toast(msg);
+    TX.selected.clear(); TXSUG.stale=true;
+    await Promise.all([loadTx(),reloadCore()]);
+  }catch(e){ toast('Bulk update failed: '+e.message); }
 }
 const REIMB_OPTS=[
   ['','Counts as my spending'],

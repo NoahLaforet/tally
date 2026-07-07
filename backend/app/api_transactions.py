@@ -240,6 +240,63 @@ def apply_patch(session: Session, txn_uid: str, category: str | None,
     return {"ok": True, "updated_others": updated_others}
 
 
+def apply_bulk(session: Session, uids: list[str], category: str | None = None,
+               reimbursement: str | None = None,
+               clear_reimbursement: bool = False) -> dict:
+    """Apply one edit to a set of selected transactions in a single commit.
+
+    Bulk means exactly the rows you picked: recategorizing still teaches the
+    LearnedCategory table per merchant (so future imports benefit) but does NOT
+    fan out to unselected siblings, and marking a repayment here does NOT create
+    a standing merchant rule (that stays a deliberate single-row action). Returns
+    how many rows changed and any uids that did not exist.
+    """
+    uids = list(dict.fromkeys(uids))[:1000]  # dedupe, and cap defensively
+    if not uids:
+        return {"ok": True, "updated": 0, "missing": []}
+    cat = None
+    if category is not None:
+        cat = category.strip()
+        if not cat:
+            raise ValueError("category cannot be empty")
+    kind = None
+    if reimbursement is not None and not clear_reimbursement:
+        kind = reimbursement.strip().lower()
+        if kind not in REIMBURSEMENT_KINDS:
+            raise ValueError("reimbursement must be 'group', 'thirdparty', or 'mine'")
+
+    txns = session.exec(
+        select(Transaction).where(Transaction.txn_uid.in_(uids))).all()
+    for t in txns:
+        if cat is not None:
+            t.category = cat
+            t.category_source = "manual"
+            t.user_locked = True
+            lc = session.get(LearnedCategory, t.norm_merchant)
+            if lc is None:
+                session.add(LearnedCategory(norm_merchant=t.norm_merchant,
+                                            category=cat))
+            else:
+                lc.category = cat
+                session.add(lc)
+        if clear_reimbursement:
+            t.reimbursement = None
+        elif kind is not None:
+            t.reimbursement = kind
+        session.add(t)
+    session.commit()
+    found = {t.txn_uid for t in txns}
+    return {"ok": True, "updated": len(txns),
+            "missing": [u for u in uids if u not in found]}
+
+
+class BulkBody(BaseModel):
+    uids: list[str]
+    category: str | None = None
+    reimbursement: str | None = None
+    clear_reimbursement: bool = False
+
+
 class TxnPatch(BaseModel):
     category: str | None = None
     user_locked: bool | None = None
@@ -271,6 +328,18 @@ def api_patch(txn_uid: str, body: TxnPatch,
         raise HTTPException(422, str(e)) from e
     if result is None:
         raise HTTPException(404, "transaction not found")
+    hub.publish("transactions:updated")
+    return result
+
+
+@router.post("/bulk")
+def api_bulk(body: BulkBody,
+             session: Session = Depends(get_session)) -> dict:
+    try:
+        result = apply_bulk(session, body.uids, body.category,
+                            body.reimbursement, body.clear_reimbursement)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
     hub.publish("transactions:updated")
     return result
 

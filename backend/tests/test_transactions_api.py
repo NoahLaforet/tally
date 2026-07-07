@@ -21,10 +21,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.api_transactions import (COLUMNS, _filters, apply_patch,
+from app.api_transactions import (COLUMNS, _filters, apply_bulk, apply_patch,
                                   list_transactions, router)
 from app.db import engine, init_db
-from app.models import Account, LearnedCategory, Transaction
+from app.models import (Account, LearnedCategory, ReimbursementRule,
+                       Transaction)
 
 
 @pytest.fixture(scope="module")
@@ -264,6 +265,53 @@ def test_patch_explicit_unlock_and_toggle(api, seeded):
         # The lock toggle does not touch the category fields.
         assert u1.category == "espresso"
         assert u1.category_source == "manual"
+
+
+def test_bulk_recategorize(api, seeded):
+    uids = seeded["uids"]
+    r = api.post("/api/transactions/bulk",
+                 json={"uids": [uids["u1"], uids["u2"]], "category": "cafe"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "updated": 2, "missing": []}
+    with Session(engine) as s:
+        for u in ("u1", "u2"):
+            t = s.get(Transaction, uids[u])
+            assert t.category == "cafe" and t.category_source == "manual"
+            assert t.user_locked is True
+        # Same merchant but NOT selected stays untouched: bulk is only your picks.
+        assert s.get(Transaction, uids["u3"]).category == "dining"
+        # Future imports of this merchant still benefit from the learned row.
+        assert s.get(LearnedCategory, seeded["coffee"]).category == "cafe"
+
+
+def test_bulk_mark_and_clear_reimbursement(api, seeded):
+    uids = seeded["uids"]
+    r = api.post("/api/transactions/bulk",
+                 json={"uids": [uids["u4"], uids["u5"]], "reimbursement": "group"})
+    assert r.json()["updated"] == 2
+    with Session(engine) as s:
+        assert s.get(Transaction, uids["u4"]).reimbursement == "group"
+        assert s.get(Transaction, uids["u5"]).reimbursement == "group"
+        # A bulk mark never creates a standing merchant rule.
+        assert s.get(ReimbursementRule, seeded["grocer"]) is None
+    r = api.post("/api/transactions/bulk",
+                 json={"uids": [uids["u4"], uids["u5"]], "clear_reimbursement": True})
+    assert r.json()["updated"] == 2
+    with Session(engine) as s:
+        assert s.get(Transaction, uids["u4"]).reimbursement is None
+
+
+def test_bulk_reports_missing_and_validates(api, seeded):
+    uids = seeded["uids"]
+    r = api.post("/api/transactions/bulk",
+                 json={"uids": [uids["u6"], "nope-xyz"], "category": "gas"})
+    body = r.json()
+    assert body["updated"] == 1 and body["missing"] == ["nope-xyz"]
+    r = api.post("/api/transactions/bulk",
+                 json={"uids": [uids["u6"]], "category": "  "})
+    assert r.status_code == 422
+    r = api.post("/api/transactions/bulk", json={"uids": []})
+    assert r.json() == {"ok": True, "updated": 0, "missing": []}
 
 
 def test_patch_unknown_uid_404(api):
