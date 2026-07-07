@@ -75,43 +75,11 @@ CAT_LABEL = {
     "streaming": "Streaming", "other": "Other / Misc",
     "transfer": "Account transfers",
 }
-# Merchant lexicons drive the gambling tracker, the delivery breakdown, and
-# the not-consumption exclusions (card payoffs, P2P, internal moves that the
-# transfer matcher cannot pair). These defaults are generic US services; each
-# instance layers its own additions on top via the 'lexicons' Setting so
-# nobody's personal banking phrasing lives in this public file.
-DEFAULT_LEXICONS = {
-    "gambling": ["draftkings", "fanduel", "betmgm", "caesars sportsbook",
-                 "prizepicks", "kalshi"],
-    "delivery": ["doordash", "uber eats", "ubereats", "grubhub", "postmates",
-                 "instacart"],
-    "nonconsumption": ["credit card auto pay", "credit card autopay",
-                       "credit card retry", "credit card payment",
-                       "savings transfer", "online transfer", "transfer to",
-                       "zelle to", "venmo payment", "bill pay", "tuition",
-                       "money transfer authorized",
-                       # Plaid emits a synthetic carryforward row when a card
-                       # is first linked; it is a balance, not a purchase.
-                       "last statement bal", "beginning balance"],
-}
-
-
-def _instance_lexicons(session: Session) -> dict[str, tuple[str, ...]]:
-    """Defaults plus this instance's additions from the 'lexicons' Setting."""
-    from .models import Setting
-
-    row = session.get(Setting, "lexicons")
-    extra = {}
-    if row:
-        try:
-            extra = json.loads(row.value_json)
-        except json.JSONDecodeError:
-            extra = {}
-    out = {}
-    for key, base in DEFAULT_LEXICONS.items():
-        more = [str(x).lower() for x in extra.get(key, [])]
-        out[key] = tuple(dict.fromkeys([*base, *more]))
-    return out
+# The spend predicate and the merchant lexicons it uses live in app.spend, the
+# single source of truth so the dashboard, the pace module, and future alerts
+# never disagree about what counts as spending. Re-exported here under the
+# original names for the existing callers (compute_dashboard, reimburse).
+from .spend import DEFAULT_LEXICONS, instance_lexicons as _instance_lexicons  # noqa: E402,F401
 
 
 def _savings_options(session: Session) -> list[dict]:
@@ -167,6 +135,7 @@ from .categorize_llm import router as llm_router  # noqa: E402
 from .demo import router as demo_router  # noqa: E402
 from .reimburse import router as reimburse_router  # noqa: E402
 from .subscriptions_engine import router as subs_router  # noqa: E402
+from .pace import router as pace_router  # noqa: E402
 
 app.include_router(plaid_router)
 app.include_router(auth_router)
@@ -178,6 +147,7 @@ app.include_router(subs_router)
 app.include_router(llm_router)
 app.include_router(demo_router)
 app.include_router(reimburse_router)
+app.include_router(pace_router)
 
 @app.get("/healthz")
 def healthz() -> dict:
