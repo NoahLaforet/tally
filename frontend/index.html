@@ -1571,7 +1571,10 @@ function renderAlertsList(j){
   host.querySelectorAll('.alert-item.unread').forEach(it=>it.addEventListener('click',async ()=>{
     const id=it.getAttribute('data-alert');
     try{ await fetchJSON('/api/alerts/'+id+'/read',{method:'POST'});
-      it.classList.remove('unread'); const d=it.querySelector('.alert-dot'); if(d) d.classList.remove('unread'); }
+      it.classList.remove('unread'); const d=it.querySelector('.alert-dot'); if(d) d.classList.remove('unread');
+      // keep the tab badge and the mark-all-read button in sync with the count
+      ALERTS_UNREAD=Math.max(0,num(ALERTS_UNREAD)-1); updateAlertBadge(ALERTS_UNREAD);
+      if(ALERTS_UNREAD===0){ const ra=el('alertReadAll'); if(ra) ra.remove(); } }
     catch(e){}
   }));
 }
