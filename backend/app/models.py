@@ -232,3 +232,23 @@ class PlaidItem(SQLModel, table=True):
     access_token: str
     institution: str | None = None
     cursor: str | None = None  # transactions/sync pagination cursor
+
+
+class Alert(SQLModel, table=True):
+    """A fired alert, kept as a log so nothing is push-only.
+
+    dedup_key makes evaluation idempotent: the same condition (a given month's
+    pace warning, a specific big charge, a subscription at a specific price)
+    only ever creates one row, no matter how often the evaluator runs.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    # pace | big_charge | sub_creep | sub_forgotten | sub_new | weekly
+    kind: str
+    dedup_key: str = Field(index=True, unique=True)
+    title: str
+    body: str
+    severity: str = "info"  # info | warn
+    created_at: datetime = Field(default_factory=_utcnow)
+    read: bool = False
+    notified: bool = False  # a macOS notification was delivered for this row

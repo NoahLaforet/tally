@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import sys
 
-from .db import init_db
+from sqlmodel import Session
+
+from .db import engine, init_db
 from .plaid_link import run_sync
 
 
@@ -20,6 +22,10 @@ def main() -> int:
     init_db()
     result = run_sync()
     print(result)
+    # Fresh data landed; check whether anything is worth an alert.
+    from .alerts import evaluate_alerts
+    with Session(engine) as session:
+        print(evaluate_alerts(session, deliver=True))
     return 0 if result.get("configured") else 1
 
 

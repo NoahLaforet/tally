@@ -99,6 +99,19 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
          "('streaming', 'Streaming', '', 0, 1), "
          "('other', 'Other / Misc', '', 0, 1), "
          "('transfer', 'Account transfers', '', 0, 1)"]),
+    # Alert log (created by create_all on fresh DBs; this creates it on
+    # existing ones and bumps user_version).
+    (10, ["CREATE TABLE IF NOT EXISTS alert ("
+          "id INTEGER PRIMARY KEY, "
+          "kind VARCHAR NOT NULL, "
+          "dedup_key VARCHAR NOT NULL, "
+          "title VARCHAR NOT NULL, "
+          "body VARCHAR NOT NULL, "
+          "severity VARCHAR NOT NULL DEFAULT 'info', "
+          "created_at TIMESTAMP, "
+          "read BOOLEAN NOT NULL DEFAULT 0, "
+          "notified BOOLEAN NOT NULL DEFAULT 0)",
+          "CREATE UNIQUE INDEX IF NOT EXISTS ix_alert_dedup_key ON alert (dedup_key)"]),
 ]
 
 SCHEMA_VERSION = max(v for v, _ in MIGRATIONS) if MIGRATIONS else 0

@@ -87,6 +87,24 @@ class Settings(BaseSettings):
     # the .env automatically the first time a token is stored.
     TALLY_ENCRYPTION_KEY: str | None = None
 
+    # Alerts. macOS notifications fire by default; set ALERTS_NOTIFY=false to
+    # keep the log without desktop pop-ups (also how the test suite stays quiet).
+    ALERTS_NOTIFY: bool = True
+    # Weekly email digest. Off until every field is set, so a fresh install
+    # never tries to send mail. Use an app password for SMTP_PASSWORD.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM: str = ""       # defaults to SMTP_USER when blank
+    DIGEST_TO: str = ""       # where the weekly digest is sent
+
+    @property
+    def smtp_configured(self) -> bool:
+        """True only when the weekly digest has everything it needs to send."""
+        return bool(self.SMTP_HOST and self.SMTP_USER
+                    and self.SMTP_PASSWORD and self.DIGEST_TO)
+
     @property
     def allowed_origins(self) -> list[str]:
         """Every origin the app may be served from, for WebAuthn verification."""

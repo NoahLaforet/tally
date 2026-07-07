@@ -136,6 +136,7 @@ from .demo import router as demo_router  # noqa: E402
 from .reimburse import router as reimburse_router  # noqa: E402
 from .subscriptions_engine import router as subs_router  # noqa: E402
 from .pace import router as pace_router  # noqa: E402
+from .alerts import router as alerts_router  # noqa: E402
 
 app.include_router(plaid_router)
 app.include_router(auth_router)
@@ -148,6 +149,7 @@ app.include_router(llm_router)
 app.include_router(demo_router)
 app.include_router(reimburse_router)
 app.include_router(pace_router)
+app.include_router(alerts_router)
 
 @app.get("/healthz")
 def healthz() -> dict:

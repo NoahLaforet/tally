@@ -19,6 +19,8 @@ os.environ["PLAID_CLIENT_ID"] = ""
 os.environ["PLAID_SECRET"] = ""
 os.environ["PLAID_ENV"] = "sandbox"
 os.environ["EXTRA_ORIGINS"] = ""
+# Never fire real macOS notifications or send mail from the suite.
+os.environ["ALERTS_NOTIFY"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
