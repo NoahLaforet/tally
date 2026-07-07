@@ -192,6 +192,18 @@
   .pace-setcap .t{font-size:14px;font-weight:600;color:var(--text);margin-bottom:5px}
   .pace-setcap .h{font-size:12.5px;color:var(--text-faint);max-width:46ch;margin:0 auto 13px}
 
+  /* alerts log */
+  .alerts-list{display:flex;flex-direction:column;gap:8px}
+  .alert-item{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;background:var(--glass-2);border:1px solid var(--glass-edge);border-radius:var(--r-sm)}
+  .alert-item.unread{border-color:var(--accent-soft);cursor:pointer}
+  .alert-dot{width:8px;height:8px;border-radius:99px;margin-top:5px;flex:none;background:var(--text-faint)}
+  .alert-dot.warn{background:var(--warn)} .alert-dot.unread{background:var(--accent);box-shadow:0 0 8px -1px var(--glow)}
+  .alert-main{flex:1;min-width:0}
+  .alert-title{font-size:13.5px;font-weight:600}
+  .alert-body{font-size:12.5px;color:var(--text-dim);margin-top:3px;line-height:1.5}
+  .alert-time{font-size:11px;color:var(--text-faint);white-space:nowrap;margin-top:3px}
+  .tab .tabdot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--accent);margin-left:6px;vertical-align:1px;box-shadow:0 0 8px -1px var(--glow)}
+
   /* inputs (>=16px so iOS never zooms) */
   input,select,textarea{font-family:var(--font);font-size:16px;color:var(--text);background:var(--glass-2);
     -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid var(--glass-edge);border-radius:10px;
@@ -431,7 +443,7 @@ const pctf=(bps)=> (num(bps)/100).toLocaleString('en-US',{maximumFractionDigits:
 
 /* ============================== state ============================== */
 let D=null, SUBS=[], ACCOUNTS=[], BUDGETS=[], INCOME=[], CARDS=[], SPLAN=null;
-let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[], PACE=null;
+let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[], PACE=null, ALERTS_UNREAD=0;
 const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:''};
 let ACTIVE='overview';
 
@@ -583,17 +595,19 @@ function showLoadError(msg){
   const b=el('retryBoot'); if(b) b.addEventListener('click',boot);
 }
 async function loadCore(){
-  const [ov,subs,accts,budgets,income,cards,splan,cats,pace]=await Promise.all([
+  const [ov,subs,accts,budgets,income,cards,splan,cats,pace,alerts]=await Promise.all([
     fetchJSON('/api/overview'), fetchJSON('/api/subscriptions'), fetchJSON('/api/accounts'),
     fetchJSON('/api/budgets'), fetchJSON('/api/income'), fetchJSON('/api/cards'), fetchJSON('/api/savings-plan'),
     fetchJSON('/api/categories').catch(()=>null), // optional: older backends lack it; fallbacks cover us
     fetchJSON('/api/pace').catch(()=>null),        // optional: older backends lack it
+    fetchJSON('/api/alerts?limit=1').catch(()=>null), // optional; drives the unread badge
   ]);
   D=ov; SUBS=Array.isArray(subs)?subs:[]; ACCOUNTS=Array.isArray(accts)?accts:[];
   BUDGETS=Array.isArray(budgets)?budgets:[]; INCOME=Array.isArray(income)?income:[];
   CARDS=Array.isArray(cards)?cards:[]; SPLAN=splan||{monthly:0,goal:0,note:''};
   if(Array.isArray(cats)) CATS=cats;
   PACE=pace||null;
+  ALERTS_UNREAD=alerts&&num(alerts.unread)||0;
 }
 let booted=false;
 async function boot(){
@@ -625,6 +639,7 @@ function renderShell(){
   }
   el('appMain').hidden=false; el('firstRun').hidden=true;
   renderHero();
+  updateAlertBadge(ALERTS_UNREAD);
   show(ACTIVE,true);
 }
 async function reloadCore(){
@@ -708,7 +723,8 @@ function renderPaceModule(opts){
   const vd=paceVerdict(p);
   // header amounts: spent is the hero; left-to-spend rides beneath when capped
   const heroLbl=capSet
-    ? '<b>'+fmt(left)+'</b> left of your '+fmt(cap)+' cap'
+    ? (left>=0 ? '<b>'+fmt(left)+'</b> left of your '+fmt(cap)+' cap'
+               : '<b>'+fmt(-left)+'</b> over your '+fmt(cap)+' cap')
     : 'spent so far';
   let bar='<div class="pace-bar">'+
     '<div class="pace-fill '+state+'" style="width:'+fillPct+'%"></div>'+
@@ -1468,6 +1484,7 @@ async function loadReimbRules(){
 function renderSettings(){
   const v=el('v-settings');
   v.innerHTML=
+    '<div class="panel"><h2>Alerts</h2><p class="desc">Pace warnings, unusual charges, and subscription changes. New ones also pop a macOS notification; the weekly rollup emails a digest once SMTP is set in .env.</p><div id="setAlerts">'+skelBlock(90)+'</div></div>'+
     '<div class="panel"><h2>Cards &amp; reward rules</h2><p class="desc">Percent back per category; the rewards router and best-card hints all read from this matrix.</p><div id="setCards"></div></div>'+
     '<div class="panel"><h2>Categories</h2><p class="desc">Your own taxonomy. Tag transactions with notes and let the categorizer sort them, or manage categories directly.</p><div id="setCats"></div></div>'+
     '<div class="panel"><h2>Bank sync</h2><p class="desc">Plaid connection status and manual sync.</p><div id="setPlaid">'+skelBlock(72)+'</div></div>'+
@@ -1479,6 +1496,7 @@ function renderSettings(){
         '<a class="minibtn" href="/api/transactions/export.json">Export all transactions (JSON)</a>'+
         '<button class="minibtn" id="llmBtn">Categorize unknowns with LLM</button>'+
       '</div><div class="note" id="llmNote"></div></div>';
+  loadAlerts();
   renderCardsEditor();
   renderCategoriesPanel();
   loadPlaid();
@@ -1504,6 +1522,58 @@ function renderSettings(){
       }
     }catch(e){ toast('Categorizer failed: '+e.message); lb.disabled=false; lb.textContent='Categorize unknowns with LLM'; }
   });
+}
+function alertTime(iso){ try{ return new Date(iso).toLocaleDateString('en-US',{month:'short',day:'numeric'}); }catch(e){ return ''; } }
+async function loadAlerts(){
+  const host=el('setAlerts'); if(!host) return;
+  try{ renderAlertsList(await fetchJSON('/api/alerts?limit=40')); }
+  catch(e){ if(!(e&&e.auth)) host.innerHTML='<div class="note">Could not load alerts: '+esc(e.message)+'</div>'; }
+}
+function renderAlertsList(j){
+  const host=el('setAlerts'); if(!host) return;
+  const list=Array.isArray(j.alerts)?j.alerts:[];
+  const status=(j.notify?'macOS notifications on':'macOS notifications off')+' · '+
+    (j.smtp_configured?'email digest configured':'email digest off (set SMTP in .env)');
+  let html='<div class="row-actions" style="margin-bottom:14px">'+
+    '<button class="minibtn acc" id="alertCheck">Check now</button>'+
+    (num(j.unread)>0?'<button class="minibtn" id="alertReadAll">Mark all read</button>':'')+
+    '<span class="note" style="margin:0">'+esc(status)+'</span></div>';
+  if(!list.length){
+    html+='<div class="empty"><div class="t">Nothing to flag</div><div class="h">Pace warnings, unusual charges, and subscription changes show up here. Check now to run a pass.</div></div>';
+  }else{
+    html+='<div class="alerts-list">'+list.map(a=>
+      '<div class="alert-item'+(a.read?'':' unread')+'" data-alert="'+num(a.id)+'">'+
+        '<span class="alert-dot'+(a.severity==='warn'?' warn':'')+(a.read?'':' unread')+'"></span>'+
+        '<div class="alert-main"><div class="alert-title">'+esc(a.title)+'</div>'+
+          '<div class="alert-body">'+esc(a.body)+'</div></div>'+
+        '<span class="alert-time">'+esc(alertTime(a.created_at))+'</span></div>').join('')+'</div>';
+  }
+  host.innerHTML=html;
+  ALERTS_UNREAD=num(j.unread); updateAlertBadge(ALERTS_UNREAD);
+  const cb=el('alertCheck');
+  if(cb) cb.addEventListener('click',async ()=>{
+    cb.disabled=true; cb.innerHTML='<span class="spin"></span> Checking&hellip;';
+    try{ const r=await fetchJSON('/api/alerts/evaluate',{method:'POST'});
+      toast(num(r.created)>0?('New alerts: '+num(r.created)):'No new alerts'); loadAlerts(); }
+    catch(e){ toast('Check failed: '+e.message); cb.disabled=false; cb.textContent='Check now'; }
+  });
+  const ra=el('alertReadAll');
+  if(ra) ra.addEventListener('click',async ()=>{
+    try{ await fetchJSON('/api/alerts/read-all',{method:'POST'}); loadAlerts(); updateAlertBadge(0); }
+    catch(e){ toast('Could not mark read: '+e.message); }
+  });
+  host.querySelectorAll('.alert-item.unread').forEach(it=>it.addEventListener('click',async ()=>{
+    const id=it.getAttribute('data-alert');
+    try{ await fetchJSON('/api/alerts/'+id+'/read',{method:'POST'});
+      it.classList.remove('unread'); const d=it.querySelector('.alert-dot'); if(d) d.classList.remove('unread'); }
+    catch(e){}
+  }));
+}
+function updateAlertBadge(n){
+  const tab=el('tab-settings'); if(!tab) return;
+  let dot=tab.querySelector('.tabdot');
+  if(num(n)>0){ if(!dot){ dot=document.createElement('span'); dot.className='tabdot'; dot.setAttribute('aria-label','unread alerts'); tab.appendChild(dot); } }
+  else if(dot){ dot.remove(); }
 }
 function renderCardsEditor(){
   const host=el('setCards'); if(!host) return;
