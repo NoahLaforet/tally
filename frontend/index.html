@@ -451,7 +451,7 @@ const pctf=(bps)=> (num(bps)/100).toLocaleString('en-US',{maximumFractionDigits:
 
 /* ============================== state ============================== */
 let D=null, SUBS=[], ACCOUNTS=[], BUDGETS=[], INCOME=[], CARDS=[], SPLAN=null;
-let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[], PACE=null, ALERTS_UNREAD=0;
+let NW=null, PLAID=null, KEYS=null, AUTHME=null, CATS=[], PACE=null, ALERTS_UNREAD=0, CMP=null;
 const TX={rows:[],total:0,page:1,page_size:50,filters:{q:'',category:'',account_id:'',origin:''},loaded:false,loading:false,error:'',selected:new Set()};
 let ACTIVE='overview';
 
@@ -653,7 +653,7 @@ function renderShell(){
 async function reloadCore(){
   try{
     await loadCore();
-    TX.loaded=false; NW=null;
+    TX.loaded=false; NW=null; CMP=null;
     renderShell();
   }catch(e){ /* keep the last good render */ }
 }
@@ -838,6 +838,7 @@ function renderSpending(){
         '<div class="panel"><h2>By card</h2><p class="desc">Where spend lands today.</p>'+barRows(cardsSpend,cardMax)+'</div>'+
       '</div>'+
     '</div>'+
+    '<div id="spCompare"></div>'+
     (flagCells.length?('<div class="grid2">'+flagCells.join('')+'</div>'):'')+
     '<div class="panel"><h2>Which card should I use?</h2><p class="desc">Pick a category, or type a merchant and Tally matches it from your data. Best card by your own reward rules.</p>'+
       '<div class="row-actions">'+
@@ -855,6 +856,35 @@ function renderSpending(){
     else renderRouterOut('');
   },250));
   renderRouterOut('');
+  loadCompare();
+}
+async function loadCompare(){
+  const host=el('spCompare'); if(!host) return;
+  if(CMP){ renderCompare(); return; }
+  host.innerHTML='<div class="panel">'+skelBlock(150)+'</div>';
+  try{ CMP=await fetchJSON('/api/compare'); renderCompare(); }
+  catch(e){ if(!(e&&e.auth)) host.innerHTML=''; }
+}
+function renderCompare(){
+  const host=el('spCompare'); if(!host||!CMP) return;
+  const cats=(CMP.categories||[]).filter(c=>num(c.current)>0||num(c.previous)>0);
+  if(!cats.length){ host.innerHTML=''; return; }
+  const dTotal=num(CMP.delta_total);
+  const totCls=dTotal>0?'over':(dTotal<0?'under':'onpar');
+  const deltaCell=d=>{ d=num(d); if(Math.abs(d)<0.005) return '<span class="onpar">—</span>';
+    return '<span class="'+(d>0?'over':'under')+'">'+(d>0?'+':'−')+fmt(Math.abs(d))+'</span>'; };
+  host.innerHTML='<div class="panel"><h2>This month vs last</h2>'+
+    '<p class="desc">Same days, category by category: '+esc(CMP.current_label)+' against '+esc(CMP.previous_label)+
+    '. <b class="'+totCls+'">'+(dTotal>0?'+':dTotal<0?'−':'')+fmt(Math.abs(dTotal))+'</b> overall ('+fmt(CMP.current_total)+' vs '+fmt(CMP.previous_total)+').</p>'+
+    '<div class="tablewrap"><table><thead><tr><th>Category</th>'+
+      '<th style="text-align:right">'+esc(CMP.previous_label)+'</th>'+
+      '<th style="text-align:right">'+esc(CMP.current_label)+'</th>'+
+      '<th style="text-align:right">Change</th></tr></thead><tbody>'+
+    cats.map(c=>'<tr><td><span class="dot" style="background:'+catColor(c.id)+';margin-right:8px"></span>'+esc(catLabel(c.id))+'</td>'+
+      '<td class="num" style="color:var(--text-dim)">'+fmt(c.previous)+'</td>'+
+      '<td class="num">'+fmt(c.current)+'</td>'+
+      '<td class="num">'+deltaCell(c.delta)+'</td></tr>').join('')+
+    '</tbody></table></div></div>';
 }
 function matchCategory(text){
   const t=text.toLowerCase();
