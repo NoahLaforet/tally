@@ -28,21 +28,26 @@ render() {
 
 SERVER_PLIST="$AGENTS_DIR/com.tally.server.plist"
 SYNC_PLIST="$AGENTS_DIR/com.tally.sync.plist"
+ALERTS_PLIST="$AGENTS_DIR/com.tally.alerts.plist"
 
 render "$TALLY_DIR/deploy/tally-server.plist.template" "$SERVER_PLIST"
 render "$TALLY_DIR/deploy/tally-sync.plist.template" "$SYNC_PLIST"
+render "$TALLY_DIR/deploy/tally-alerts.plist.template" "$ALERTS_PLIST"
 
 # Unload first so re-running the installer picks up changes. Tolerate not-loaded.
 launchctl unload "$SERVER_PLIST" 2>/dev/null || true
 launchctl unload "$SYNC_PLIST" 2>/dev/null || true
+launchctl unload "$ALERTS_PLIST" 2>/dev/null || true
 launchctl load "$SERVER_PLIST"
 launchctl load "$SYNC_PLIST"
+launchctl load "$ALERTS_PLIST"
 
 echo "Installed:"
 echo "  $SERVER_PLIST (server, keeps running, starts at login)"
-echo "  $SYNC_PLIST (daily Plaid sync at 08:00)"
+echo "  $SYNC_PLIST (daily Plaid sync + alert check at 08:00)"
+echo "  $ALERTS_PLIST (midday alert check at 13:00)"
 echo
 echo "Status:"
 launchctl list | grep com.tally || echo "  (jobs not visible yet, check 'launchctl list' in a moment)"
 echo
-echo "Logs: $LOG_DIR/server.log and $LOG_DIR/sync.log"
+echo "Logs: $LOG_DIR/server.log, $LOG_DIR/sync.log, and $LOG_DIR/alerts.log"
