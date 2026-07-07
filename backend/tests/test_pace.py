@@ -65,6 +65,18 @@ def test_empty_db_does_not_crash(db):
     assert p["day_of_month"] == 15 and p["days_in_month"] == 31
 
 
+def test_cap_endpoint_rejects_non_finite(client):
+    # A raw client can send the non-standard Infinity/NaN JSON tokens (stdlib
+    # json.loads accepts them); the endpoint must 422 rather than crash on
+    # round(inf*100). Send raw content because httpx blocks inf client-side.
+    hdr = {"content-type": "application/json"}
+    for token in ("Infinity", "-Infinity", "NaN"):
+        r = client.put("/api/pace/cap", content='{"cap": ' + token + "}", headers=hdr)
+        assert r.status_code == 422, token
+    assert client.put("/api/pace/cap", json={"cap": 2000}).status_code == 200
+    client.put("/api/pace/cap", json={"cap": None})  # clean up shared DB state
+
+
 def test_core_numbers(db):
     _base_scenario(db)
     p = compute_pace(db, today=TODAY)

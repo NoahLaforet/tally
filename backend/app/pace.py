@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import calendar
 import json
+import math
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -194,6 +195,11 @@ class CapBody(BaseModel):
 
 @router.put("/pace/cap")
 def api_set_cap(body: CapBody) -> dict:
+    # stdlib json.loads accepts the non-standard Infinity/NaN tokens, so a raw
+    # client can smuggle a non-finite cap in; reject it with a clean 422 rather
+    # than crash on round(inf*100).
+    if body.cap is not None and not math.isfinite(body.cap):
+        raise HTTPException(422, "cap must be a finite number")
     with Session(engine) as session:
         cents = None if body.cap is None else round(float(body.cap) * 100)
         save_cap_cents(session, cents)

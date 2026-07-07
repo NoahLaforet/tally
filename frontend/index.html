@@ -708,8 +708,14 @@ function paceVerdict(p){
   if(p.state==='watch'){
     return {cls:'watch', html:'<b class="k">Running hot.</b> <b>'+ahead+'</b> ahead of a typical <b>'+typ+'</b> by day '+d+'. On track for about <b>'+proj+'</b>'+(capSet?(' against your <b>'+cap+'</b> cap.'):'.')};
   }
-  if(capSet)
-    return {cls:'under', html:'<b class="k">On pace.</b> <b>'+left+'</b> left to spend, on track to finish around <b>'+proj+'</b> under your <b>'+cap+'</b> cap.'};
+  if(capSet){
+    // Early in the month the state stays "under" even if the shape-based
+    // projection already tops the cap (day 1-3 projections aren't trusted for
+    // escalation); don't claim "under your cap" when the number shown isn't.
+    const overCap=num(p.projected)>num(p.cap);
+    return {cls:'under', html:'<b class="k">On pace.</b> <b>'+left+'</b> left to spend, on track to finish around <b>'+proj+'</b>'+
+      (overCap?', which would edge past your <b>'+cap+'</b> cap.':' under your <b>'+cap+'</b> cap.')};
+  }
   return {cls:'under', html:'<b class="k">On pace.</b> You are at <b>'+spent+'</b>; a typical day-'+d+' sits near <b>'+typ+'</b>.'};
 }
 function renderPaceModule(opts){

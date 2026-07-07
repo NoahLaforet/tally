@@ -63,21 +63,48 @@ def test_first_run_seeds_quietly(db):
     assert all(a.read for a in db.exec(select(Alert)).all())
 
 
-def test_big_charge_fires_after_seed_only_when_new(db):
+def test_big_charge_kind_seeds_first_then_delivers(db):
     for i in range(6):
         _txn(db, TODAY - timedelta(days=20 + i), -30_00, f"COFFEE {i}", source_line=i)
     db.commit()
-    evaluate_alerts(db, today=TODAY, deliver=False)          # seed
-    # A fresh big charge lands after the log exists.
-    _txn(db, TODAY - timedelta(days=1), -420_00, "BIG TICKET", source_line=99)
+    evaluate_alerts(db, today=TODAY, deliver=False)          # seeds the weekly kind
+    # First big charge: the big_charge KIND has never fired, so it seeds quietly.
+    _txn(db, TODAY - timedelta(days=2), -420_00, "BIG TICKET", source_line=99)
+    db.commit()
+    r2 = evaluate_alerts(db, today=TODAY, deliver=False)
+    b2 = [a for a in r2["alerts"] if a["kind"] == "big_charge"]
+    assert len(b2) == 1 and b2[0]["read"] is True            # seeded, not delivered
+    # A later big charge delivers, because the kind is now established.
+    _txn(db, TODAY - timedelta(days=1), -500_00, "BIGGER TICKET", source_line=100)
+    db.commit()
+    r3 = evaluate_alerts(db, today=TODAY, deliver=False)
+    b3 = [a for a in r3["alerts"] if a["kind"] == "big_charge"]
+    assert len(b3) == 1 and b3[0]["read"] is False           # delivered
+    assert evaluate_alerts(db, today=TODAY, deliver=False)["created"] == 0
+
+
+def test_sub_new_backcatalog_seeds_quietly(db):
+    # Alerts turned on before any subscription was detected: the weekly rollup
+    # seeds and the log is now non-empty (this is what used to consume the seed).
+    evaluate_alerts(db, today=TODAY, deliver=False)
+    # Detection later materializes the whole recurring back-catalog at once.
+    for i in range(5):
+        db.add(Subscription(name=f"Sub{i}", monthly_cents=1000, detected=True,
+                            cadence_days=30, last_seen_on=TODAY - timedelta(days=2),
+                            norm_merchant=f"SUB{i}"))
     db.commit()
     res = evaluate_alerts(db, today=TODAY, deliver=False)
-    assert res["seeded"] is False
-    assert "big_charge" in _kinds(res)
-    new = [a for a in res["alerts"] if a["kind"] == "big_charge"]
-    assert len(new) == 1 and not new[0]["read"]
-    # Old, out-of-window big charges never resurface.
-    assert evaluate_alerts(db, today=TODAY, deliver=False)["created"] == 0
+    subs = [a for a in res["alerts"] if a["kind"] == "sub_new"]
+    assert len(subs) == 5
+    assert all(a["read"] for a in subs)   # seeded quietly, no notification flood
+    # A genuinely new subscription after the kind is established delivers.
+    db.add(Subscription(name="Later", monthly_cents=2000, detected=True,
+                        cadence_days=30, last_seen_on=TODAY - timedelta(days=1),
+                        norm_merchant="LATER"))
+    db.commit()
+    res2 = evaluate_alerts(db, today=TODAY, deliver=False)
+    later = [a for a in res2["alerts"] if a["kind"] == "sub_new"]
+    assert len(later) == 1 and later[0]["read"] is False
 
 
 def test_old_big_charge_outside_lookback_ignored(db):

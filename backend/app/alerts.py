@@ -25,6 +25,7 @@ import sys
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
 from .auth import require_user
@@ -211,7 +212,9 @@ def _subscription_candidates(session: Session, today: date) -> list[dict]:
         if s.detected and s.last_seen_on and (today - s.last_seen_on).days <= 35:
             out.append({
                 "kind": "sub_new",
-                "dedup_key": f"sub_new:{s.id}",
+                # Include the merchant so a reused SQLite rowid (delete the
+                # newest sub, detect a different one) can't suppress the alert.
+                "dedup_key": f"sub_new:{s.id}:{s.norm_merchant or s.name}",
                 "title": f"New recurring charge: {name}",
                 "body": (f"About {_money(s.monthly_cents)}/mo. Tally spotted it "
                          f"as recurring."),
@@ -265,11 +268,19 @@ def _weekly_candidates(session: Session, today: date) -> list[dict]:
 def evaluate_alerts(session: Session, today: date | None = None,
                     deliver: bool = True) -> dict:
     """Build every candidate alert, insert the ones not already logged, and
-    deliver the genuinely new ones. Idempotent by dedup_key. The first run on a
-    populated log seeds quietly (marked read, nothing delivered)."""
+    deliver the genuinely new ones. Idempotent by dedup_key.
+
+    Seeding is per KIND, not one global first run: the first time a given kind
+    ever appears it is logged quietly (marked read, not delivered). This matters
+    because subscriptions are detected lazily, so a global "first run" seed can
+    be consumed by the always-present weekly rollup before any subscription
+    exists; the whole subscription back-catalog would then flood Notification
+    Center the first time detection runs. Per-kind seeding keeps that quiet while
+    still delivering genuinely new events after a kind is established.
+    """
     today = today or date.today()
     existing = set(session.exec(select(Alert.dedup_key)).all())
-    seeding = session.exec(select(func.count()).select_from(Alert)).one() == 0
+    seeded_kinds = set(session.exec(select(Alert.kind)).all())
 
     candidates: list[dict] = []
     candidates += _pace_candidates(session, today)
@@ -287,21 +298,30 @@ def evaluate_alerts(session: Session, today: date | None = None,
         seen.add(k)
         fresh.append(c)
 
-    created: list[Alert] = []
+    created: list[tuple[Alert, bool]] = []  # (alert, is_seed)
     for c in fresh:
+        is_seed = c["kind"] not in seeded_kinds
         a = Alert(kind=c["kind"], dedup_key=c["dedup_key"], title=c["title"],
                   body=c["body"], severity=c.get("severity", "info"),
-                  read=seeding)
-        session.add(a)
-        created.append(a)
+                  read=is_seed)
+        try:
+            # A savepoint per row so a concurrent run (daily sync vs midday tick
+            # vs the API) that already logged this key is a no-op, not a crash.
+            with session.begin_nested():
+                session.add(a)
+            created.append((a, is_seed))
+        except IntegrityError:
+            session.expunge(a)
     session.commit()
-    for a in created:
+    for a, _ in created:
         session.refresh(a)
 
     delivered = 0
     emailed = 0
-    if deliver and not seeding:
-        for a in created:
+    if deliver:
+        for a, is_seed in created:
+            if is_seed:
+                continue
             if notify_macos(a.title, a.body):
                 a.notified = True
                 delivered += 1
@@ -314,8 +334,8 @@ def evaluate_alerts(session: Session, today: date | None = None,
         "created": len(created),
         "delivered": delivered,
         "emailed": emailed,
-        "seeded": seeding,
-        "alerts": [_alert_out(a) for a in created],
+        "seeded": any(is_seed for _, is_seed in created),
+        "alerts": [_alert_out(a) for a, _ in created],
     }
 
 
